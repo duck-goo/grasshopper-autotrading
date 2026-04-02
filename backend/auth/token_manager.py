@@ -40,9 +40,15 @@ class TokenManager:
         if res.status_code == 200:
             data = res.json()
             self.access_token = data["access_token"]
-            # 토큰 만료시간 23시간으로 설정 (실제 24시간이지만 여유있게)
-            self.token_expired_at = datetime.now() + timedelta(hours=23)
+            # 23시간 → 12시간으로 변경 (재발급 너무 자주 안 되게)
+            self.token_expired_at = datetime.now() + timedelta(hours=12)
             print(f"✅ 토큰 발급 성공: {datetime.now()}")
+        elif res.status_code == 403:
+            # 403이면 기존 토큰 재사용 (잠시 대기)
+            print(f"⚠️ 토큰 발급 제한 중, 1분 후 재시도...")
+            import time
+            time.sleep(60)
+            self._issue_token()
         else:
             print(f"❌ 토큰 발급 실패: {res.status_code}")
             raise Exception("토큰 발급 실패")

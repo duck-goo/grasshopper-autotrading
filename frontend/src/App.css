@@ -1,0 +1,171 @@
+/* src/App.css */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background-color: #0d1117;
+  color: #e6edf3;
+  font-family: 'Segoe UI', sans-serif;
+}
+
+.app {
+  min-height: 100vh;
+}
+
+/* 네비게이션 */
+.navbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 32px;
+  background-color: #161b22;
+  border-bottom: 1px solid #30363d;
+}
+
+.navbar h1 {
+  font-size: 20px;
+  color: #58a6ff;
+}
+
+.nav-links {
+  display: flex;
+  gap: 24px;
+}
+
+.nav-links a {
+  color: #8b949e;
+  text-decoration: none;
+  font-size: 14px;
+  transition: color 0.2s;
+}
+
+.nav-links a:hover {
+  color: #e6edf3;
+}
+
+/* 메인 컨텐츠 */
+.main-content {
+  padding: 32px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* 카드 */
+.card {
+  background-color: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.card h2 {
+  font-size: 16px;
+  color: #8b949e;
+  margin-bottom: 16px;
+}
+
+/* 그리드 */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+/* 종목 카드 */
+.stock-card {
+  background-color: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.stock-card .ticker {
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.stock-card .name {
+  font-size: 16px;
+  font-weight: bold;
+  margin: 4px 0;
+}
+
+.stock-card .price {
+  font-size: 24px;
+  font-weight: bold;
+  color: #58a6ff;
+}
+
+.stock-card .change.up { color: #3fb950; }
+.stock-card .change.down { color: #f85149; }
+
+.stock-card .indicators {
+  margin-top: 12px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.stock-card .indicator {
+  font-size: 12px;
+  background-color: #161b22;
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: #8b949e;
+}
+
+/* 버튼 */
+.btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  transition: opacity 0.2s;
+}
+
+.btn:hover { opacity: 0.8; }
+.btn-primary { background-color: #238636; color: white; }
+.btn-danger { background-color: #da3633; color: white; }
+
+/* 테이블 */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+th {
+  text-align: left;
+  padding: 10px;
+  color: #8b949e;
+  border-bottom: 1px solid #30363d;
+}
+
+td {
+  padding: 10px;
+  border-bottom: 1px solid #21262d;
+}
+
+/* 입력 */
+input {
+  background-color: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #e6edf3;
+  padding: 8px 12px;
+  font-size: 14px;
+  width: 100%;
+}
+
+input:focus {
+  outline: none;
+  border-color: #58a6ff;
+}
+
+.status-ok { color: #3fb950; }
+.status-error { color: #f85149; }
