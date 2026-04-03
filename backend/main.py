@@ -28,7 +28,7 @@ from database.logger import (
     init_condition_db, save_condition, get_conditions,
     delete_condition, toggle_condition, log_alert
 )
-from scheduler.scanner import scanner_loop, run_scanner, scan_results, scan_status
+from scheduler import scanner as scanner_module
 
 # ---- Pydantic 모델 ----
 class ConditionItem(BaseModel):
@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
     # 모니터링 + 텔레그램 봇 동시 실행
     task1 = asyncio.create_task(monitor_loop())
     task2 = asyncio.create_task(start_telegram_bot())
-    task3 = asyncio.create_task(scanner_loop())
+    task3 = asyncio.create_task(scanner_module.scanner_loop())
     yield
     # 서버 종료 시 모니터링 중지
     task1.cancel()
@@ -387,16 +387,16 @@ def toggle_condition_api(condition_id: int, is_active: bool):
 # 스캐너 API
 @app.get("/scanner/status")
 def get_scanner_status():
-    return {"status": "ok", "data": scan_status}
+    return {"status": "ok", "data": scanner_module.scan_status}
 
 @app.get("/scanner/results")
 def get_scanner_results():
-    return {"status": "ok", "data": scan_results}
+    return {"status": "ok", "data": scanner_module.scan_status}
 
 @app.post("/scanner/run")
 async def run_scanner_now():
     """수동으로 즉시 스캔 실행"""
-    if scan_status["is_running"]:
+    if scanner_module.scan_status["is_running"]:
         return {"status": "error", "message": "이미 스캔 중이에요!"}
-    asyncio.create_task(run_scanner())
+    asyncio.create_task(scanner_module.scan_status())
     return {"status": "ok", "message": "스캔 시작!"}

@@ -7,6 +7,8 @@ import Settings from './pages/Settings';
 import './App.css';
 import Backtest from './pages/Backtest';
 import AiPredict from './pages/AiPredict';
+import Scanner from './pages/Scanner';
+import Conditions from './pages/Conditions';
 
 function App() {
   return (
@@ -21,6 +23,8 @@ function App() {
             <Link to="/settings">⚙️ 설정</Link>
             <Link to="/backtest">🔬 백테스트</Link>
             <Link to="/ai">🦗 메뚜기의 예측</Link>
+            <Link to="/scanner">🔍 스캐너</Link>
+            <Link to="/conditions">📐 조건식</Link>
           </div>
         </nav>
 
@@ -32,6 +36,8 @@ function App() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/backtest" element={<Backtest />} />
             <Route path="/ai" element={<AiPredict />} />
+            <Route path="/scanner" element={<Scanner />} />
+            <Route path="/conditions" element={<Conditions />} />
           </Routes>
         </main>
       </div>

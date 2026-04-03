@@ -151,7 +151,7 @@ async def scan_stock(session: aiohttp.ClientSession, stock: dict,
 
                 if is_match:
                     alert_key = f"scan_{ticker}_{condition['id']}"
-                    scan_results.append({
+                    results.append({
                         "ticker": ticker,
                         "name": name,
                         "market": market,
@@ -195,8 +195,9 @@ async def scan_stock(session: aiohttp.ClientSession, stock: dict,
 
 async def run_scanner():
     """전종목 조건식 스캐너 (비동기 병렬 처리)"""
-    global scan_results, scan_status
+    global scan_results, scan_status, alerted_scan
 
+    alerted_scan = set()
     conditions = get_conditions()
     if not conditions:
         print("⚠️ 활성화된 조건식이 없어요")
@@ -222,7 +223,7 @@ async def run_scanner():
     scan_status["total"] = len(all_stocks)
     scan_status["scanned"] = 0
     scan_status["found"] = 0
-    scan_results = []
+    scan_results.clear()
 
     start_time = time.time()
     print(f"🔍 전종목 스캔 시작: {len(all_stocks)}개 종목 / {len(conditions)}개 조건식")
