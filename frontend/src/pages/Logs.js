@@ -7,11 +7,13 @@ const API = 'http://127.0.0.1:8080';
 function Logs() {
   const [monitorLogs, setMonitorLogs] = useState([]);
   const [alertLogs, setAlertLogs] = useState([]);
+  const [tradeLogs, setTradeLogs] = useState([]);
   const [tab, setTab] = useState('monitor');
 
   useEffect(() => {
     axios.get(`${API}/logs/monitor`).then(res => setMonitorLogs(res.data.data));
     axios.get(`${API}/logs/alerts`).then(res => setAlertLogs(res.data.data));
+    axios.get(`${API}/logs/trades`).then(res => setTradeLogs(res.data.data));
   }, []);
 
   return (
@@ -33,6 +35,11 @@ function Logs() {
           onClick={() => setTab('alert')}
         >
           알림 로그
+        </button>
+        <button className={`btn ${tab === 'trade' ? 'btn-primary' : ''}`}
+          style={tab !== 'trade' ? { background: '#21262d', color: '#e6edf3' } : {}}
+          onClick={() => setTab('trade')}>
+          💹 매매 이력
         </button>
       </div>
 
@@ -103,6 +110,46 @@ function Logs() {
           )}
         </div>
       )}
+      {tab === 'trade' && (
+      <div className="card">
+        {tradeLogs.length === 0 ? (
+          <p style={{ color: '#8b949e' }}>아직 매매 내역이 없어요.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>시간</th><th>종목</th><th>구분</th>
+                <th>가격</th><th>수량</th><th>금액</th>
+                <th>조건식</th><th>수익률</th><th>사유</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tradeLogs.map(log => (
+                <tr key={log.id}>
+                  <td style={{ color: '#8b949e', fontSize: '12px' }}>
+                    {log.created_at.replace('T',' ').slice(0,19)}
+                  </td>
+                  <td>{log.name} ({log.ticker})</td>
+                  <td style={{ color: log.trade_type === 'buy' ? '#f85149' : '#3fb950',
+                              fontWeight: 'bold' }}>
+                    {log.trade_type === 'buy' ? '🔴 매수' : '🔵 매도'}
+                  </td>
+                  <td>{parseInt(log.price).toLocaleString()}원</td>
+                  <td>{log.qty}주</td>
+                  <td>{parseInt(log.amount).toLocaleString()}원</td>
+                  <td style={{ fontSize: '12px', color: '#f0883e' }}>{log.condition_name}</td>
+                  <td style={{ color: log.profit_rate > 0 ? '#f85149' :
+                              log.profit_rate < 0 ? '#3fb950' : '#8b949e' }}>
+                    {log.profit_rate != null ? `${log.profit_rate > 0 ? '+' : ''}${log.profit_rate}%` : '-'}
+                  </td>
+                  <td style={{ fontSize: '12px' }}>{log.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    )}
     </div>
   );
 }

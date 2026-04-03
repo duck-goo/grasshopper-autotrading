@@ -18,6 +18,18 @@ const CONDITION_TYPES = {
   PRICE:        { label: '현재가(원)',      needsOperator: true,  needsValue: true,  valueLabel: '가격(원)',  placeholder: '10000' },
 };
 
+// 봉 선택 가능한 조건 타입
+const TIMEFRAME_TYPES = ["RSI", "VOLUME_RATIO", "CHANGE_RATE", "PRICE"];
+
+const TIMEFRAME_OPTIONS = [
+    { value: "D",  label: "일봉" },
+    { value: "60", label: "60분봉" },
+    { value: "30", label: "30분봉" },
+    { value: "15", label: "15분봉" },
+    { value: "5",  label: "5분봉" },
+    { value: "1",  label: "1분봉" },
+];
+
 const OPERATORS = [
   { value: '>=', label: '이상 (≥)' },
   { value: '<=', label: '이하 (≤)' },
@@ -37,7 +49,9 @@ const EXTRA_LABELS = {
 
 // 빈 조건 아이템 기본값
 const newItem = () => ({
-  type: 'RSI', operator: '<=', value: 30, signal: 'golden_cross', period: 20, short: 5, long: 20
+    type: 'RSI', operator: '<=', value: 30,
+    signal: 'golden_cross', period: 20, short: 5, long: 20,
+    timeframe: 'D'  // ✅ 추가
 });
 
 function Conditions() {
@@ -89,11 +103,12 @@ function Conditions() {
     const items = form.items.map(item => {
       const t = CONDITION_TYPES[item.type];
       const base = { type: item.type };
-      if (t.needsOperator) base.operator = item.operator;
-      if (t.needsValue)    base.value    = parseFloat(item.value);
-      if (t.extra)         base.signal   = item.signal;
-      if (t.needsPeriod)   { base.operator = item.operator; base.value = item.period; }
-      if (t.needsShortLong){ base.short = parseInt(item.short); base.long = parseInt(item.long); base.signal = item.signal; }
+      if (t.needsOperator)  base.operator  = item.operator;
+      if (t.needsValue)     base.value     = parseFloat(item.value);
+      if (t.extra)          base.signal    = item.signal;
+      if (t.needsPeriod)    { base.operator = item.operator; base.value = item.period; }
+      if (t.needsShortLong) { base.short = parseInt(item.short); base.long = parseInt(item.long); base.signal = item.signal; }
+      if (TIMEFRAME_TYPES.includes(item.type)) base.timeframe = item.timeframe;  // ✅ 추가
       return base;
     });
 
@@ -277,6 +292,19 @@ function Conditions() {
                     </select>
                   )}
 
+                  {/* 봉 선택 - 해당 타입만 표시 */}
+                  {TIMEFRAME_TYPES.includes(item.type) && (
+                    <select
+                      style={{ ...sel, color: '#f0883e' }}
+                      value={item.timeframe || 'D'}
+                      onChange={e => updateItem(i, 'timeframe', e.target.value)}
+                    >
+                      {TIMEFRAME_OPTIONS.map(tf => (
+                        <option key={tf.value} value={tf.value}>{tf.label}</option>
+                      ))}
+                    </select>
+                  )}
+
                   {/* 삭제 버튼 */}
                   {form.items.length > 1 && (
                     <button onClick={() => removeItem(i)} style={{
@@ -352,11 +380,15 @@ function Conditions() {
                       {item.operator && ` ${item.operator}`}
                       {item.value && ` ${item.value}`}
                       {item.extra && item.extra !== 'None' && item.extra !== '' && ` (${EXTRA_LABELS[item.extra] || item.extra})`}
+                      {item.timeframe && item.timeframe !== 'D' && (
+                        <span style={{ color: '#f0883e', marginLeft: '4px' }}>
+                          [{TIMEFRAME_OPTIONS.find(t => t.value === item.timeframe)?.label || item.timeframe}]
+                        </span>
+                      )}
                     </span>
                   ))}
                 </div>
               </div>
-
               {/* 버튼들 */}
               <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
                 <button onClick={() => toggleCondition(cond.id, cond.is_active)} style={{

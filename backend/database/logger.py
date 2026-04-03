@@ -7,7 +7,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "database", "auto_trader.db")
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -108,11 +108,6 @@ def get_alert_logs(limit: int = 50) -> list:
     ).fetchall()
     conn.close()
     return [dict(row) for row in rows]
-
-def get_db():
-    conn = sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 def init_settings_db():
     """설정 테이블 초기화"""
@@ -229,9 +224,18 @@ def init_condition_db():
             operator TEXT,
             value REAL,
             extra TEXT,
+            timeframe TEXT DEFAULT 'D',  -- ✅ 추가: D=일봉, 1/5/15/30/60=분봉
             FOREIGN KEY (condition_id) REFERENCES conditions(id)
         )
     """)
+
+    # ✅ 기존 DB에 timeframe 컬럼 없으면 추가 (마이그레이션)
+    try:
+        conn.execute("ALTER TABLE condition_items ADD COLUMN timeframe TEXT DEFAULT 'D'")
+        print("✅ condition_items에 timeframe 컬럼 추가")
+    except:
+        pass  # 이미 있으면 무시
+
     conn.commit()
     conn.close()
     print("✅ 조건식 DB 초기화 완료")
@@ -253,22 +257,25 @@ def save_condition(name: str, description: str, logic: str,
     for item in items:
         conn.execute(
             """INSERT INTO condition_items
-            (condition_id, type, operator, value, extra)
-            VALUES (?, ?, ?, ?, ?)""",
+            (condition_id, type, operator, value, extra, timeframe)
+            VALUES (?, ?, ?, ?, ?, ?)""",
             (condition_id, item.get("type"), item.get("operator"),
-             item.get("value"), str(item.get("extra", "")))
+             item.get("value"), str(item.get("extra", "")),
+             item.get("timeframe", "D"))  # ✅ timeframe 저장
         )
 
     conn.commit()
     conn.close()
     return condition_id
 
-def get_conditions() -> list:
-    """조건식 전체 조회"""
+def get_conditions(active_only: bool = True) -> list:
+    """조건식 전체 조회(active_only=True면 활성만, False면 전체)"""
     conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM conditions WHERE is_active = 1 ORDER BY created_at DESC"
-    ).fetchall()
+    if active_only:
+        query = "SELECT * FROM conditions WHERE is_active = 1 ORDER BY created_at DESC"
+    else:
+        query = "SELECT * FROM conditions ORDER BY created_at DESC"
+    rows = conn.execute(query).fetchall()
     conditions = []
     for row in rows:
         cond = dict(row)
@@ -284,7 +291,8 @@ def get_conditions() -> list:
 def delete_condition(condition_id: int):
     """조건식 삭제"""
     conn = get_db()
-    conn.execute("UPDATE conditions SET is_active = 0 WHERE id = ?", (condition_id,))
+    conn.execute("DELETE FROM condition_items WHERE condition_id = ?", (condition_id,))
+    conn.execute("DELETE FROM conditions WHERE id = ?", (condition_id,))
     conn.commit()
     conn.close()
 
@@ -297,3 +305,44 @@ def toggle_condition(condition_id: int, is_active: bool):
     )
     conn.commit()
     conn.close()
+
+def init_trade_db():
+    """매매 이력 테이블 초기화"""
+    conn = get_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS trade_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT,
+            name TEXT,
+            trade_type TEXT,      -- 'buy' / 'sell'
+            price REAL,
+            qty INTEGER,
+            amount REAL,
+            condition_name TEXT,
+            profit_rate REAL,     -- 매도 시 수익률 (매수는 NULL)
+            reason TEXT,          -- '자동매수', '익절', '손절'
+            created_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def log_trade(ticker, name, trade_type, price, qty, condition_name="", profit_rate=None, reason=""):
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO trade_log 
+        (ticker, name, trade_type, price, qty, amount, condition_name, profit_rate, reason, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (ticker, name, trade_type, price, qty, price*qty,
+         condition_name, profit_rate, reason, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+def get_trade_logs(limit=100):
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM trade_log ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]

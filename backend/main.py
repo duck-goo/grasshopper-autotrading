@@ -26,7 +26,8 @@ from database.logger import (
     init_stock_list_db, save_stock_list,
     get_stock_list_from_db, is_stock_list_outdated,
     init_condition_db, save_condition, get_conditions,
-    delete_condition, toggle_condition, log_alert
+    delete_condition, toggle_condition, log_alert,
+    init_trade_db
 )
 from scheduler import scanner as scanner_module
 
@@ -36,6 +37,7 @@ class ConditionItem(BaseModel):
     operator: Optional[str] = None
     value: Optional[float] = None
     extra: Optional[str] = None
+    timeframe: Optional[str] = "D"  # ✅ 추가: D=일봉, 1/5/15/30/60=분봉
 
 class ConditionCreate(BaseModel):
     name: str
@@ -51,6 +53,7 @@ class ConditionCreate(BaseModel):
 async def lifespan(app: FastAPI):
     init_db()# 모니터링 백그라운드 실행
     init_log_db() # 로그 DB 초기화
+    init_trade_db()
     init_settings_db()
     init_stock_list_db()
     init_condition_db()
@@ -141,14 +144,7 @@ def get_watchlist_prices():
         price_data["name"] = t["name"]  # ← 이 줄 추가!
         result.append(price_data)
     return {"status": "ok", "data": result}
-    token = token_manager.get_token()
-    tickers = get_tickers()
-    result = []
-    for t in tickers:
-        price_data = get_stock_price(t["ticker"], token)
-        result.append(price_data)
-    return {"status": "ok", "data": result}
-
+    
 from strategy.condition import check_condition, calculate_rsi, calculate_macd, calculate_ma
 from api.stock import get_stock_history
 
@@ -363,7 +359,7 @@ def get_all_stocks(market: str = "ALL"):
 # 조건식 API
 @app.get("/conditions")
 def get_all_conditions():
-    return {"status": "ok", "data": get_conditions()}
+    return {"status": "ok", "data": get_conditions(active_only=False)}
 
 @app.post("/conditions")
 def create_condition(body: ConditionCreate):
@@ -391,12 +387,16 @@ def get_scanner_status():
 
 @app.get("/scanner/results")
 def get_scanner_results():
-    return {"status": "ok", "data": scanner_module.scan_status}
+    return {"status": "ok", "data": scanner_module.scan_results}  # ✅ scan_results로!
 
 @app.post("/scanner/run")
 async def run_scanner_now():
-    """수동으로 즉시 스캔 실행"""
     if scanner_module.scan_status["is_running"]:
         return {"status": "error", "message": "이미 스캔 중이에요!"}
-    asyncio.create_task(scanner_module.scan_status())
+    asyncio.create_task(scanner_module.run_scanner())  # ✅ run_scanner()로!
     return {"status": "ok", "message": "스캔 시작!"}
+
+@app.get("/logs/trades")
+def get_trade_log():
+    from database.logger import get_trade_logs
+    return {"status": "ok", "data": get_trade_logs()}
