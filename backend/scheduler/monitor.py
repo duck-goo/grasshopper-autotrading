@@ -1,7 +1,7 @@
 # backend/scheduler/monitor.py
 import asyncio
 import time
-from api.stock import get_stock_price, get_stock_history
+from api.stock import get_stock_price, get_stock_history, get_stock_history_long
 from api.watchlist import get_tickers
 from api.order import buy_stock, sell_stock, get_balance
 from strategy.condition import check_condition_v2, calculate_rsi, calculate_macd, calculate_ma
@@ -33,7 +33,7 @@ async def monitor_loop():
             token = token_manager.get_token()
 
             # 잔고 5분마다 갱신
-            if time.time() - balance_last_updated > 300:
+            if time.time() - balance_last_updated > 180:
                 balance_cache = get_balance(token)
                 balance_last_updated = time.time()
 
@@ -42,7 +42,7 @@ async def monitor_loop():
                 await process_auto_buy(settings, token)
 
             # ── 2. 보유 포지션 익절/손절 체크 ─────────────────────
-            if auto_positions and settings.get("auto_order") == "true":
+            if settings.get("auto_order") == "true":
                 await check_exit(settings, token)
 
             # ── 3. 관심종목 모니터링 (기존 기능 유지) ─────────────
@@ -78,6 +78,7 @@ async def monitor_loop():
 
 
 async def process_auto_buy(settings: dict, token: str):
+    global balance_cache, balance_last_updated
     """스캐너 후보 종목을 조건 재검증 후 자동매수"""
     if not auto_buy_candidates:
         return
@@ -111,7 +112,7 @@ async def process_auto_buy(settings: dict, token: str):
                 continue
 
             # 과거 데이터 재조회
-            prices = get_stock_history(ticker, token)
+            prices = get_stock_history_long(ticker, token)
             if not prices or len(prices) < 20:
                 continue
 
@@ -157,6 +158,9 @@ async def process_auto_buy(settings: dict, token: str):
                     print(f"✅ 자동매수: {name}({ticker}) {qty}주 @ {current_price:,.0f}원")
                     log_trade(ticker, name, "buy", current_price, qty,
                             condition_name=condition_name, reason="자동매수")
+                    global balance_cache, balance_last_updated
+                    balance_cache = get_balance(token)
+                    balance_last_updated = time.time()
 
                 else:
                     print(f"❌ 매수 실패: {name}({ticker}) - {result.get('message', '')}")
@@ -172,21 +176,32 @@ async def process_auto_buy(settings: dict, token: str):
 
 
 async def check_exit(settings: dict, token: str):
-    """보유 포지션 익절/손절 체크 후 자동매도"""
+    global balance_cache, balance_last_updated
+    """보유 포지션 익절/손절 체크 - 실제 잔고 기반"""
     take_profit = float(settings.get("take_profit", 5.0))
     stop_loss = float(settings.get("stop_loss", 3.0))
-    to_remove = []
-    
-    for ticker, pos in auto_positions.items():
+
+    # ✅ auto_positions 대신 실제 잔고에서 보유종목 조회
+    balance = get_balance(token)
+    if not balance.get("success"):
+        return
+
+    holdings = balance.get("holdings", [])
+    if not holdings:
+        return
+
+    for holding in holdings:
+        ticker = holding["ticker"]
+        name = holding["name"]
+        qty = int(holding["qty"])
+        avg_price = float(holding["avg_price"])
+
         try:
             price_data = get_stock_price(ticker, token)
             current_price = float(price_data.get("price", 0))
             if current_price == 0:
                 continue
 
-            avg_price = pos["avg_price"]
-            qty = pos["qty"]
-            name = pos["name"]
             profit_rate = ((current_price - avg_price) / avg_price) * 100
 
             should_sell = False
@@ -203,6 +218,10 @@ async def check_exit(settings: dict, token: str):
                 emoji = "🛑"
 
             if should_sell:
+                alert_key = f"{ticker}_exit_{round(profit_rate, 1)}"
+                if alert_key in alerted:
+                    continue
+
                 result = sell_stock(ticker, qty, token)
                 if result["success"]:
                     msg = (
@@ -218,16 +237,18 @@ async def check_exit(settings: dict, token: str):
                     if settings.get("popup_alert") == "true":
                         send_popup(f"{emoji} {reason}!", f"{name} 자동 매도 완료!")
                     log_alert(ticker, name, current_price, f"자동매도:{reason}", msg)
-                    print(f"{emoji} 자동매도: {name}({ticker}) {reason}")
-                    to_remove.append(ticker)
-
                     log_trade(ticker, name, "sell", current_price, qty,
-                            condition_name=pos["condition_name"],
-                            profit_rate=round(profit_rate, 2),
-                            reason="익절" if profit_rate > 0 else "손절")
+                              profit_rate=round(profit_rate, 2),
+                              reason="익절" if profit_rate > 0 else "손절")
+                    print(f"{emoji} 자동매도: {name}({ticker}) {reason}")
+                    alerted.add(alert_key)
+
+                    balance_cache = get_balance(token)
+                    balance_last_updated = time.time()
+
+                    # auto_positions에서도 제거
+                    if ticker in auto_positions:
+                        del auto_positions[ticker]
 
         except Exception as e:
             log_error("auto_exit", f"{ticker} 익절/손절 오류: {str(e)}")
-
-    for ticker in to_remove:
-        del auto_positions[ticker]

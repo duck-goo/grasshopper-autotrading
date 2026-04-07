@@ -15,6 +15,7 @@ from auth.token_manager import token_manager
 
 # 스캔 결과 저장
 scan_results = []
+temp_results = []
 scan_status = {
     "is_running": False,
     "total": 0,
@@ -27,7 +28,9 @@ scan_status = {
 alerted_scan = set()
 
 # 동시 요청 제한 (KIS API 제한 고려)
-CONCURRENT_LIMIT = 5  # 동시에 5개씩 처리
+CONCURRENT_LIMIT = 7  # 동시에 3개씩 처리
+# 비동기 세션 + 세마포어로 동시 요청 제한
+CHUNK_SIZE = 100
 
 async def fetch_stock_data(session: aiohttp.ClientSession, ticker: str, token: str) -> dict:
     """비동기 현재가 조회"""
@@ -139,7 +142,7 @@ async def fetch_intraday(session: aiohttp.ClientSession, ticker: str, token: str
 async def scan_stock(session: aiohttp.ClientSession, stock: dict,
                      conditions: list, token: str, semaphore: asyncio.Semaphore):
     """단일 종목 스캔"""
-    global scan_results
+    global scan_results, temp_results
 
     async with semaphore:
         ticker = stock["ticker"]
@@ -209,7 +212,7 @@ async def scan_stock(session: aiohttp.ClientSession, stock: dict,
 
                 if is_match:
                     alert_key = f"scan_{ticker}_{condition['id']}"
-                    scan_results.append({
+                    temp_results.append({
                         "ticker":         ticker,
                         "name":           name,
                         "market":         market,
@@ -269,7 +272,11 @@ async def scan_stock(session: aiohttp.ClientSession, stock: dict,
 
 async def run_scanner():
     """전종목 조건식 스캐너 (비동기 병렬 처리)"""
-    global scan_results, scan_status, alerted_scan
+    global scan_results, scan_status, alerted_scan, temp_results
+
+    if scan_status["is_running"]:
+        print("이미 스캔 중이다!")
+        return
 
     alerted_scan = set()
     conditions = get_conditions()
@@ -298,12 +305,10 @@ async def run_scanner():
     scan_status["scanned"] = 0
     scan_status["found"] = 0
     scan_results.clear()
+    temp_results.clear()
 
     start_time = time.time()
     print(f"🔍 전종목 스캔 시작: {len(all_stocks)}개 종목 / {len(conditions)}개 조건식")
-
-    # 비동기 세션 + 세마포어로 동시 요청 제한
-    CHUNK_SIZE = 100
 
     semaphore = asyncio.Semaphore(CONCURRENT_LIMIT)
     async with aiohttp.ClientSession() as session:
@@ -314,7 +319,7 @@ async def run_scanner():
                 for stock in chunk
             ]
             await asyncio.gather(*tasks)
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(30)
 
     elapsed = time.time() - start_time
     scan_status["is_running"] = False
@@ -322,6 +327,8 @@ async def run_scanner():
 
     print(f"✅ 스캔 완료! {scan_status['found']}개 종목 발견 "
           f"(소요시간: {elapsed:.1f}초)")
+    
+    scan_results.extend(temp_results)
 
 # ✅ 수정 - 장중/장외 구분해서 주기 다르게
 async def scanner_loop():

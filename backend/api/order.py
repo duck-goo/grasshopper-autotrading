@@ -1,6 +1,7 @@
 # backend/api/order.py
 import requests
 import os
+import time as time_module
 from dotenv import load_dotenv
 from database.logger import log_error
 
@@ -127,38 +128,49 @@ def get_balance(token: str) -> dict:
         "CTX_AREA_NK100": ""
     }
 
-    try:
-        res = requests.get(url, headers=headers, params=params)
-        data = res.json()
+    for attempt in range(3):
+        try:
+            res = requests.get(url, headers=headers, params=params)
+            data = res.json()
 
-        if data.get("rt_cd") == "0":
-            output1 = data.get("output1", [])  # 보유종목
-            output2 = data.get("output2", [{}])  # 계좌 요약
+            if data.get("rt_cd") == "0":
+                output1 = data.get("output1", [])  # 보유종목
+                output2 = data.get("output2", [{}])  # 계좌 요약
 
-            holdings = []
-            for item in output1:
-                if item.get("hldg_qty", "0") != "0":
-                    holdings.append({
-                        "ticker": item.get("pdno"),
-                        "name": item.get("prdt_name"),
-                        "qty": item.get("hldg_qty"),
-                        "avg_price": item.get("pchs_avg_pric"),
-                        "current_price": item.get("prpr"),
-                        "profit_loss": item.get("evlu_pfls_amt"),
-                        "profit_rate": item.get("evlu_pfls_rt"),
-                    })
+                holdings = []
+                for item in output1:
+                    if item.get("hldg_qty", "0") != "0":
+                        holdings.append({
+                            "ticker": item.get("pdno"),
+                            "name": item.get("prdt_name"),
+                            "qty": item.get("hldg_qty"),
+                            "avg_price": item.get("pchs_avg_pric"),
+                            "current_price": item.get("prpr"),
+                            "profit_loss": item.get("evlu_pfls_amt"),
+                            "profit_rate": item.get("evlu_pfls_rt"),
+                        })
 
-            summary = output2[0] if output2 else {}
-            return {
-                "success": True,
-                "holdings": holdings,
-                "total_eval": summary.get("tot_evlu_amt", "0"),      # 총 평가금액
-                "available_cash": summary.get("nxdy_excc_amt", "0"), # 가용 현금
-                "profit_loss": summary.get("evlu_pfls_smtl_amt", "0") # 총 손익
-            }
-        else:
-            return {"success": False, "message": data.get("msg1")}
+                summary = output2[0] if output2 else {}
+                dnca = int(summary.get("dnca_tot_amt", "0").replace(",", "") or "0")
+                thdt_buy = int(summary.get("thdt_buy_amt", "0").replace(",", "") or "0")  # 당일 매수금액
 
-    except Exception as e:
-        log_error("balance", str(e))
-        return {"success": False, "message": str(e)}
+                return {
+                    "success": True,
+                    "holdings": holdings,
+                    "total_eval": summary.get("tot_evlu_amt", "0"),
+                    "available_cash": str(dnca - thdt_buy),  # ✅ 예수금 - 당일매수금액
+                    "profit_loss": summary.get("evlu_pfls_smtl_amt", "0")
+                }
+            elif "초당 거래건수" in data.get("msg1", ""):
+                print(f"⚠️ 잔고 조회 제한 - {attempt+1}번째 재시도...")
+                time_module.sleep(1)  # 1초 대기 후 재시도
+                continue
+
+            else:
+                return {"success": False, "message": data.get("msg1")}
+
+        except Exception as e:
+            log_error("balance", str(e))
+            return {"success": False, "message": str(e)}
+
+    return {"success": False, "message": "잔고 조회 제한 초과"}

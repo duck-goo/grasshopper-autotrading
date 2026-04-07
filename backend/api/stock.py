@@ -61,10 +61,6 @@ def get_stock_history(ticker: str, token: str, period: int = 30) -> list:
 
     res = requests.get(url, headers=headers, params=params)
     
-    # 응답 전체 출력 (디버깅용)
-    print(f"📊 상태코드: {res.status_code}")
-    print(f"📊 응답내용: {res.text[:500]}")
-
     if res.status_code == 200:
         data = res.json()
         output = data.get("output", [])

@@ -27,7 +27,7 @@ from database.logger import (
     get_stock_list_from_db, is_stock_list_outdated,
     init_condition_db, save_condition, get_conditions,
     delete_condition, toggle_condition, log_alert,
-    init_trade_db
+    init_trade_db, log_trade
 )
 from scheduler import scanner as scanner_module
 
@@ -280,7 +280,10 @@ def order_sell(ticker: str, name: str, qty: int):
                 message=f"{name} ({ticker}) {qty}주 매도 완료!"
             )
 
-        log_alert(ticker, name, 0, "매도체결", msg)
+        price_data = get_stock_price(ticker, token_manager.get_token())
+        sell_price = int(price_data.get("price", 0))
+        log_alert(ticker, name, sell_price, "매도체결", msg)
+        log_trade(ticker, name, "sell", sell_price, qty, reason="수동매도")
 
     return {"status": "ok" if result["success"] else "error", "data": result}
 
