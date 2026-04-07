@@ -51,18 +51,19 @@ class ConditionCreate(BaseModel):
 # ---- 앱 초기화 ----
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()# 모니터링 백그라운드 실행
-    init_log_db() # 로그 DB 초기화
+    # 각종 DB 초기화
+    init_db()
+    init_log_db()
     init_trade_db()
     init_settings_db()
     init_stock_list_db()
     init_condition_db()
-    # 모니터링 + 텔레그램 봇 동시 실행
+
+    # 백그라운드 작업 시작
     task1 = asyncio.create_task(monitor_loop())
     task2 = asyncio.create_task(start_telegram_bot())
     task3 = asyncio.create_task(scanner_module.scanner_loop())
     yield
-    # 서버 종료 시 모니터링 중지
     task1.cancel()
     task2.cancel()
     task3.cancel()

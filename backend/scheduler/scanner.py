@@ -12,6 +12,7 @@ from strategy.condition import check_condition_v2
 from notification.telegram import send_message, send_order_confirm
 from notification.popup import send_signal_popup, send_popup
 from auth.token_manager import token_manager
+from shared_state import auto_buy_candidates
 
 # 스캔 결과 저장
 scan_results = []
@@ -224,7 +225,6 @@ async def scan_stock(session: aiohttp.ClientSession, stock: dict,
                     scan_status["found"] += 1
 
                     # 자동매수 후보 추가
-                    from shared_state import auto_buy_candidates
                     settings = get_settings()
                     if settings.get("auto_order") == "true":
                         already_added = any(
@@ -310,7 +310,7 @@ async def run_scanner():
     start_time = time.time()
     print(f"🔍 전종목 스캔 시작: {len(all_stocks)}개 종목 / {len(conditions)}개 조건식")
 
-   # 비동기 세션 + 배치 처리 (다른 API 요청에 숨통 트여주기)
+    # 비동기 세션 + 배치 처리 (다른 API 요청에 숨통 트여주기)
     semaphore = asyncio.Semaphore(CONCURRENT_LIMIT)
     BATCH_SIZE = 50  # 50개씩 끊어서 처리
 
@@ -326,13 +326,12 @@ async def run_scanner():
             await asyncio.sleep(0.5)
 
     elapsed = time.time() - start_time
+    scan_results.extend(temp_results)
     scan_status["is_running"] = False
     scan_status["last_scan"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     print(f"✅ 스캔 완료! {scan_status['found']}개 종목 발견 "
-          f"(소요시간: {elapsed:.1f}초)")
-    
-    scan_results.extend(temp_results)
+          f"(소요시간: {elapsed:.1f}초)")   
 
 # ✅ 수정 - 장중/장외 구분해서 주기 다르게
 async def scanner_loop():

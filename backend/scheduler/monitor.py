@@ -30,7 +30,7 @@ async def monitor_loop():
     import time as _time
     last_alert_clear = _time.time()
 
-    while Ture:
+    while True:
         try:
             if _time.time() - last_alert_clear > 3600:
                 alerted.clear()
@@ -86,8 +86,8 @@ async def monitor_loop():
 
 
 async def process_auto_buy(settings: dict, token: str):
-    global balance_cache, balance_last_updated
     """스캐너 후보 종목을 조건 재검증 후 자동매수"""
+    global balance_cache, balance_last_updated
     if not auto_buy_candidates:
         return
 
@@ -184,8 +184,8 @@ async def process_auto_buy(settings: dict, token: str):
 
 
 async def check_exit(settings: dict, token: str):
-    global balance_cache, balance_last_updated
     """보유 포지션 익절/손절 체크 - 실제 잔고 기반"""
+    global balance_cache, balance_last_updated
     take_profit = float(settings.get("take_profit", 5.0))
     stop_loss = float(settings.get("stop_loss", 3.0))
 

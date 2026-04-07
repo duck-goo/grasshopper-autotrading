@@ -159,14 +159,23 @@ def get_balance(token: str) -> dict:
                     })
 
                 summary = output2[0] if output2 else {}
-                dnca = int(summary.get("dnca_tot_amt", "0").replace(",", "") or "0")
-                thdt_buy = int(summary.get("thdt_buy_amt", "0").replace(",", "") or "0")  # 당일 매수금액
+                
+                def safe_int(val, default=0):
+                    if val is None or val == "":
+                        return default
+                    try:
+                        return int(str(val).replace(",","") or default)
+                    except (ValueError, TypeError):
+                        return default
+                dnca = safe_int(summary.get("dnca_tot_amt"))
+                thdt_buy = safe_int(summary.get("thdt_buy_amt"))
+                available = max(0, dnca - thdt_buy)
 
                 return {
                     "success": True,
                     "holdings": holdings,
                     "total_eval": summary.get("tot_evlu_amt", "0"),
-                    "available_cash": str(dnca - thdt_buy),  # ✅ 예수금 - 당일매수금액
+                    "available_cash": str(available),  # ✅ 예수금 - 당일매수금액
                     "profit_loss": summary.get("evlu_pfls_smtl_amt", "0")
                 }
             elif "초당 거래건수" in data.get("msg1", ""):
