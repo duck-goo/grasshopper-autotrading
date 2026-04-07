@@ -28,7 +28,7 @@ scan_status = {
 alerted_scan = set()
 
 # 동시 요청 제한 (KIS API 제한 고려)
-CONCURRENT_LIMIT = 7  # 동시에 3개씩 처리
+CONCURRENT_LIMIT = 3  # 동시에 3개씩 처리
 # 비동기 세션 + 세마포어로 동시 요청 제한
 CHUNK_SIZE = 100
 
@@ -60,7 +60,7 @@ async def fetch_stock_data(session: aiohttp.ClientSession, ticker: str, token: s
                 "success": price > 0
             }
     except Exception as e:
-        print(f"❌ fetch_stock_data 오류 ({ticker}): {e}")  # ✅ 에러 내용 출력
+        print(f"❌ {ticker} 시세조회 실패: {e}")
         return {"ticker": ticker, "price": 0, "success": False}
 
 async def fetch_history(session: aiohttp.ClientSession, ticker: str, token: str) -> list:
@@ -163,7 +163,7 @@ async def scan_stock(session: aiohttp.ClientSession, stock: dict,
                 # 가격 필터
                 if current_price < condition["min_price"]:
                     continue
-                if condition["max_price"] > 0 and current_price > condition["max_price"]:
+                if condition["max_price"] and current_price > condition["max_price"]:
                     continue
 
                 # ✅ 아래 전부 for condition 루프 안 (들여쓰기 8칸)
@@ -310,16 +310,20 @@ async def run_scanner():
     start_time = time.time()
     print(f"🔍 전종목 스캔 시작: {len(all_stocks)}개 종목 / {len(conditions)}개 조건식")
 
+   # 비동기 세션 + 배치 처리 (다른 API 요청에 숨통 트여주기)
     semaphore = asyncio.Semaphore(CONCURRENT_LIMIT)
+    BATCH_SIZE = 50  # 50개씩 끊어서 처리
+
     async with aiohttp.ClientSession() as session:
-        for i in range(0, len(all_stocks), CHUNK_SIZE):
-            chunk = all_stocks[i:i + CHUNK_SIZE]
+        for i in range(0, len(all_stocks), BATCH_SIZE):
+            batch = all_stocks[i:i + BATCH_SIZE]
             tasks = [
                 scan_stock(session, stock, conditions, token, semaphore)
-                for stock in chunk
+                for stock in batch
             ]
             await asyncio.gather(*tasks)
-            await asyncio.sleep(30)
+            # 배치 사이에 잠깐 쉬어서 다른 API 요청이 끼어들 틈을 줌
+            await asyncio.sleep(0.5)
 
     elapsed = time.time() - start_time
     scan_status["is_running"] = False

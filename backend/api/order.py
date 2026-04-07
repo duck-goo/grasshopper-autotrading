@@ -139,16 +139,24 @@ def get_balance(token: str) -> dict:
 
                 holdings = []
                 for item in output1:
-                    if item.get("hldg_qty", "0") != "0":
-                        holdings.append({
-                            "ticker": item.get("pdno"),
-                            "name": item.get("prdt_name"),
-                            "qty": item.get("hldg_qty"),
-                            "avg_price": item.get("pchs_avg_pric"),
-                            "current_price": item.get("prpr"),
-                            "profit_loss": item.get("evlu_pfls_amt"),
-                            "profit_rate": item.get("evlu_pfls_rt"),
-                        })
+                    # 문자열 → 정수 변환 후 비교 (안전)
+                    try:
+                        qty = int(float(item.get("hldg_qty", "0") or 0))
+                    except (ValueError, TypeError):
+                        qty = 0
+
+                    if qty <= 0:
+                        continue  # 수량 0 이하는 무조건 제외
+
+                    holdings.append({
+                        "ticker": item.get("pdno"),
+                        "name": item.get("prdt_name"),
+                        "qty": str(qty),
+                        "avg_price": item.get("pchs_avg_pric"),
+                        "current_price": item.get("prpr"),
+                        "profit_loss": item.get("evlu_pfls_amt"),
+                        "profit_rate": item.get("evlu_pfls_rt"),
+                    })
 
                 summary = output2[0] if output2 else {}
                 dnca = int(summary.get("dnca_tot_amt", "0").replace(",", "") or "0")

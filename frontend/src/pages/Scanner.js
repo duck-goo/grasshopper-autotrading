@@ -32,9 +32,9 @@ function Scanner() {
     fetchData();
     const interval = setInterval(() => {
       fetchData();
-    }, 2000);
+    }, status.is_running ? 2000 : 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [status.is_running]);
 
   // 수동 스캔 실행
   const runScan = async () => {

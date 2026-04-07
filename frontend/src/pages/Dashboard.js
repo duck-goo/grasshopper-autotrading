@@ -63,7 +63,7 @@ function Dashboard() {
         }
 
         // 3초 후 실제 잔고 데이터로 갱신
-        setTimeout(() => fetchData(), 1000);
+        setTimeout(() => fetchData(), 1500);
 
       } else {
         setOrderMsg(`❌ 주문 실패: ${res.data.data.message}`);

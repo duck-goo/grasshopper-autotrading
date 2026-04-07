@@ -27,8 +27,16 @@ async def monitor_loop():
     global balance_cache, balance_last_updated
     print("🔍 모니터링 시작!")
 
-    while True:
+    import time as _time
+    last_alert_clear = _time.time()
+
+    while Ture:
         try:
+            if _time.time() - last_alert_clear > 3600:
+                alerted.clear()
+                last_alert_clear = _time.time()
+                print("알림기록 초기화")
+
             settings = get_settings()
             token = token_manager.get_token()
 
