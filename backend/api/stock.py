@@ -189,19 +189,32 @@ def get_stock_list(market: str, token: str) -> list:
         print(f"❌ 종목 리스트 오류: {e}")
         return []
     
-def get_volume_rank(token: str, 
+def get_volume_rank(token: str,
                     market: str = "KOSPI",
                     min_price: int = 0,
                     max_price: int = 0,
                     sort_by: str = "amount") -> list:
     """
-    거래대금 상위 30개 종목 조회 (KIS 거래량 순위 API)
-    한 번 호출에 한 시장에서 30개씩 반환됨
+    거래대금/거래량 상위 종목 조회 (KIS 거래량 순위 API)
+    한 번 호출에 한 시장에서 최대 30개 반환
+
+    Args:
+        token:     KIS 액세스 토큰
+        market:    "KOSPI" 또는 "KOSDAQ"
+        min_price: 최소 현재가 (원). 0이면 제한 없음
+        max_price: 최대 현재가 (원). 0이면 제한 없음
+        sort_by:   "amount" = 거래대금 순 (기본)
+                   "volume" = 거래량 순
     """
     url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/volume-rank"
 
-    # 시장 코드: KOSPI=0001, KOSDAQ=1001
+    # 시장 코드
     market_code = "0001" if market == "KOSPI" else "1001"
+
+    # 정렬 기준 코드 (KIS API 문서 기준)
+    # 0 = 평균거래량, 1 = 거래증가율, 2 = 평균거래회전율,
+    # 3 = 거래금액순, 4 = 평균거래금액회전율
+    sort_code = "3" if sort_by == "amount" else "0"
 
     headers = {
         "content-type":  "application/json",
@@ -216,11 +229,11 @@ def get_volume_rank(token: str,
         "FID_COND_SCR_DIV_CODE":  "20171",
         "FID_INPUT_ISCD":         market_code,
         "FID_DIV_CLS_CODE":       "0",            # 0 = 전체
-        "FID_BLNG_CLS_CODE":      "3",            # 3 = 거래대금 순
-        "FID_TRGT_CLS_CODE":      "111111111",    # 모두 포함
+        "FID_BLNG_CLS_CODE":      sort_code,      # ✅ 정렬 기준
+        "FID_TRGT_CLS_CODE":      "111111111",
         "FID_TRGT_EXLS_CLS_CODE": "0000000000",
-        "FID_INPUT_PRICE_1":      str(min_price), # 최소가격 필터
-        "FID_INPUT_PRICE_2":      "",
+        "FID_INPUT_PRICE_1":      str(min_price) if min_price > 0 else "",
+        "FID_INPUT_PRICE_2":      str(max_price) if max_price > 0 else "",
         "FID_VOL_CNT":            "",
         "FID_INPUT_DATE_1":       ""
     }
@@ -237,16 +250,25 @@ def get_volume_rank(token: str,
         result = []
         for item in output:
             try:
+                price = int(item.get("stck_prpr", 0) or 0)
+
+                # ✅ API가 필터를 무시하는 경우를 대비한 이중 안전망
+                if min_price > 0 and price < min_price:
+                    continue
+                if max_price > 0 and price > max_price:
+                    continue
+
                 result.append({
                     "ticker": item.get("mksc_shrn_iscd"),
                     "name":   item.get("hts_kor_isnm"),
                     "market": market,
-                    "price":  int(item.get("stck_prpr", 0) or 0),
+                    "price":  price,
                 })
             except (ValueError, TypeError):
                 continue
 
-        print(f"✅ {market} 거래대금 상위 {len(result)}개 조회 완료")
+        print(f"✅ {market} {sort_by} 상위 {len(result)}개 "
+              f"(가격: {min_price:,}~{max_price:,}원)")
         return result
 
     except Exception as e:

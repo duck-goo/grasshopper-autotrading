@@ -127,6 +127,10 @@ def init_settings_db():
         ("order_amount", "100000"),
         ("take_profit", "5.0"),
         ("stop_loss", "3.0"),
+        ("hot_min_price", "10000"),
+        ("hot_max_price", "0"),
+        ("hot_market", "ALL"),
+        ("hot_sort_by", "amount"),
     ]
     for key, value in defaults:
         conn.execute(

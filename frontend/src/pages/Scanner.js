@@ -12,6 +12,16 @@ function Scanner() {
   const [filterMarket, setFilterMarket] = useState('ALL');
   const [filterCondition, setFilterCondition] = useState('ALL');
   const [msg, setMsg] = useState('');
+  // 핫풀 설정 state
+  const [hotConfig, setHotConfig] = useState({
+    min_price: 0,
+    max_price: 0,
+    market: 'ALL',
+    sort_by: 'amount',
+  });
+  const [hotSaving, setHotSaving] = useState(false);
+  const [hotRefreshing, setHotRefreshing] = useState(false);
+  const [hotUniverse, setHotUniverse] = useState({ count: 0, age_seconds: 0 });
 
   // 상태 + 결과 불러오기
   const fetchData = async () => {
@@ -27,6 +37,72 @@ function Scanner() {
     }
   };
 
+  // 핫풀 설정 불러오기
+  const fetchHotConfig = async () => {
+    try {
+      const res = await axios.get(`${API}/scanner/universe/config`);
+      setHotConfig(res.data.data);
+    } catch (e) {
+      console.error('핫풀 설정 조회 실패:', e);
+    }
+  };
+
+  // 핫풀 현재 상태 불러오기
+  const fetchHotUniverse = async () => {
+    try {
+      const res = await axios.get(`${API}/scanner/universe`);
+      setHotUniverse({
+        count: res.data.count || 0,
+        age_seconds: res.data.age_seconds || 0,
+      });
+    } catch (e) {
+      console.error('핫풀 상태 조회 실패:', e);
+    }
+  };
+
+  // 핫풀 설정 저장
+  const saveHotConfig = async () => {
+    setHotSaving(true);
+    try {
+      const params = new URLSearchParams({
+        min_price: hotConfig.min_price,
+        max_price: hotConfig.max_price,
+        market: hotConfig.market,
+        sort_by: hotConfig.sort_by,
+      });
+      const res = await axios.post(`${API}/scanner/universe/config?${params}`);
+      if (res.data.status === 'ok') {
+        setMsg('✅ 핫풀 설정 저장 완료!');
+      } else {
+        setMsg(`❌ ${res.data.message || '저장 실패'}`);
+      }
+    } catch (e) {
+      setMsg('❌ 핫풀 설정 저장 실패');
+    } finally {
+      setHotSaving(false);
+      setTimeout(() => setMsg(''), 3000);
+    }
+  };
+
+  // 핫풀 즉시 갱신
+  const refreshHotUniverse = async () => {
+    setHotRefreshing(true);
+    try {
+      const res = await axios.post(`${API}/scanner/universe/refresh`);
+      if (res.data.status === 'ok') {
+        setMsg(`✅ 핫풀 갱신 완료: ${res.data.count}개 종목`);
+        fetchHotUniverse();
+      } else {
+        setMsg('❌ 핫풀 갱신 실패');
+      }
+    } catch (e) {
+      setMsg('❌ 핫풀 갱신 실패');
+    } finally {
+      setHotRefreshing(false);
+      setTimeout(() => setMsg(''), 3000);
+    }
+  };
+
   // 스캔 실행 중이면 2초마다 자동 갱신
   useEffect(() => {
     fetchData();
@@ -35,6 +111,16 @@ function Scanner() {
     }, status.is_running ? 2000 : 10000);
     return () => clearInterval(interval);
   }, [status.is_running]);
+
+  // 핫풀 설정/상태 초기 로드 + 주기적 갱신
+  useEffect(() => {
+    fetchHotConfig();
+    fetchHotUniverse();
+    const interval = setInterval(() => {
+      fetchHotUniverse();
+    }, 10000);  // 10초마다 핫풀 상태 갱신
+    return () => clearInterval(interval);
+  }, []);
 
   // 수동 스캔 실행
   const runScan = async () => {
@@ -87,6 +173,114 @@ function Scanner() {
           {msg}
         </div>
       )}
+
+      {/* 🔥 핫풀 설정 */}
+      <div className="card" style={{ marginBottom: '20px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+          <h3 style={{ fontSize: '15px', margin: 0 }}>🔥 핫풀 설정</h3>
+          <div style={{ fontSize: '12px', color: '#8b949e' }}>
+            현재: <span style={{ color: '#f0883e', fontWeight: 'bold' }}>{hotUniverse.count}개 종목</span>
+            {hotUniverse.age_seconds > 0 && (
+              <span style={{ marginLeft: '8px' }}>
+                · {hotUniverse.age_seconds < 60
+                    ? `${hotUniverse.age_seconds}초 전`
+                    : `${Math.floor(hotUniverse.age_seconds / 60)}분 전`} 갱신
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* 입력 필드들 */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '16px' }}>
+          <div>
+            <label style={{ fontSize: '12px', color: '#8b949e', display: 'block', marginBottom: '4px' }}>
+              최소 현재가 (원)
+            </label>
+            <input
+              type="number"
+              value={hotConfig.min_price}
+              onChange={e => setHotConfig({ ...hotConfig, min_price: parseInt(e.target.value) || 0 })}
+              placeholder="0 = 제한 없음"
+            />
+          </div>
+
+          <div>
+            <label style={{ fontSize: '12px', color: '#8b949e', display: 'block', marginBottom: '4px' }}>
+              최대 현재가 (원)
+            </label>
+            <input
+              type="number"
+              value={hotConfig.max_price}
+              onChange={e => setHotConfig({ ...hotConfig, max_price: parseInt(e.target.value) || 0 })}
+              placeholder="0 = 제한 없음"
+            />
+          </div>
+
+          <div>
+            <label style={{ fontSize: '12px', color: '#8b949e', display: 'block', marginBottom: '4px' }}>
+              시장
+            </label>
+            <select
+              value={hotConfig.market}
+              onChange={e => setHotConfig({ ...hotConfig, market: e.target.value })}
+              style={{
+                width: '100%', padding: '8px 12px',
+                background: '#0d1117', border: '1px solid #30363d',
+                borderRadius: '6px', color: '#e6edf3', fontSize: '14px'
+              }}
+            >
+              <option value="ALL">전체</option>
+              <option value="KOSPI">KOSPI</option>
+              <option value="KOSDAQ">KOSDAQ</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={{ fontSize: '12px', color: '#8b949e', display: 'block', marginBottom: '4px' }}>
+              정렬 기준
+            </label>
+            <select
+              value={hotConfig.sort_by}
+              onChange={e => setHotConfig({ ...hotConfig, sort_by: e.target.value })}
+              style={{
+                width: '100%', padding: '8px 12px',
+                background: '#0d1117', border: '1px solid #30363d',
+                borderRadius: '6px', color: '#e6edf3', fontSize: '14px'
+              }}
+            >
+              <option value="amount">거래대금</option>
+              <option value="volume">거래량</option>
+            </select>
+          </div>
+        </div>
+
+        {/* 액션 버튼 */}
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            className="btn btn-primary"
+            onClick={saveHotConfig}
+            disabled={hotSaving}
+            style={{ opacity: hotSaving ? 0.5 : 1 }}
+          >
+            {hotSaving ? '⏳ 저장 중...' : '💾 설정 저장'}
+          </button>
+          <button
+            className="btn"
+            onClick={refreshHotUniverse}
+            disabled={hotRefreshing}
+            style={{
+              background: '#1f6feb', color: '#fff',
+              opacity: hotRefreshing ? 0.5 : 1
+            }}
+          >
+            {hotRefreshing ? '⏳ 갱신 중...' : '🔄 즉시 갱신'}
+          </button>
+          <div style={{ flex: 1 }} />
+          <div style={{ color: '#8b949e', fontSize: '12px', alignSelf: 'center' }}>
+            💡 저장 = DB 영구 저장 / 갱신 = 지금 설정으로 핫풀 재생성
+          </div>
+        </div>
+      </div>
 
       {/* 상태 카드 */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '20px' }}>

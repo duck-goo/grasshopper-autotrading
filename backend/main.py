@@ -137,6 +137,7 @@ async def websocket_endpoint(websocket: WebSocket):
 # 관심종목 전체 현재가 조회
 @app.get("/watchlist/prices")
 def get_watchlist_prices():
+    scanner_module.request_scanner_pause(3.0)  # ✅ 관심종목 여러 개라서 3초
     token = token_manager.get_token()
     tickers = get_tickers()
     result = []
@@ -223,6 +224,7 @@ def update_settings(key: str, value: str):
 # 잔고 조회
 @app.get("/balance")
 def get_account_balance():
+    scanner_module.request_scanner_pause(2.0)  # ✅ 스캐너 2초 양보 요청
     token = token_manager.get_token()
     result = get_balance(token)
     return {"status": "ok", "data": result}
@@ -230,9 +232,9 @@ def get_account_balance():
 # 매수 주문
 @app.post("/order/buy")
 def order_buy(ticker: str, name: str, qty: int):
+    scanner_module.request_scanner_pause(2.0)  # ✅ 주문은 즉시 처리돼야 함
     settings = get_settings()
     token = token_manager.get_token()
-
     result = buy_stock(ticker, qty, token)
 
     if result["success"]:
@@ -260,9 +262,9 @@ def order_buy(ticker: str, name: str, qty: int):
 # 매도 주문
 @app.post("/order/sell")
 def order_sell(ticker: str, name: str, qty: int):
+    scanner_module.request_scanner_pause(2.0)  # ✅ 주문은 즉시 처리돼야 함
     settings = get_settings()
     token = token_manager.get_token()
-
     result = sell_stock(ticker, qty, token)
 
     if result["success"]:
@@ -402,13 +404,37 @@ async def run_scanner_now():
 
 @app.post("/scanner/universe/refresh")
 def refresh_hot_universe(
-    min_price: int = 0,
-    max_price: int = 0,
-    market: str = "ALL",
-    sort_by: str = "amount",
+    min_price: int = None,
+    max_price: int = None,
+    market: str = None,
+    sort_by: str = None,
 ):
-    """핫 종목 풀을 즉시 갱신"""
-    count = scanner_module.update_hot_universe(min_price=1000)
+    """
+    핫 종목 풀 즉시 갱신
+    옵션 없이 호출하면 settings DB의 기본값 사용
+    옵션 주면 그 값으로 1회 갱신 (DB에 저장은 안 됨)
+
+    예시:
+      POST /scanner/universe/refresh                          → DB 기본값
+      POST /scanner/universe/refresh?min_price=30000          → 1회 오버라이드
+    """
+    # 인자 변환 (None 그대로 두면 update_hot_universe가 DB값 사용)
+    markets = None
+    if market == "KOSPI":
+        markets = ["KOSPI"]
+    elif market == "KOSDAQ":
+        markets = ["KOSDAQ"]
+    elif market == "ALL":
+        markets = ["KOSPI", "KOSDAQ"]
+    # market이 None이면 markets도 None → DB값 사용
+
+    count = scanner_module.update_hot_universe(
+        min_price=min_price,
+        max_price=max_price,
+        markets=markets,
+        sort_by=sort_by,
+    )
+
     return {
         "status": "ok",
         "count": count,
@@ -435,6 +461,60 @@ async def run_hot_scanner():
         return {"status": "error", "message": "이미 스캔 중이에요!"}
     asyncio.create_task(scanner_module.run_scanner(use_hot_universe=True))
     return {"status": "ok", "message": "핫 풀 스캔 시작!"}
+
+@app.get("/scanner/universe/config")
+def get_hot_config():
+    """현재 저장된 핫 풀 설정 조회"""
+    s = get_settings()
+    return {
+        "status": "ok",
+        "data": {
+            "min_price": int(s.get("hot_min_price", "0") or 0),
+            "max_price": int(s.get("hot_max_price", "0") or 0),
+            "market": s.get("hot_market", "ALL"),
+            "sort_by": s.get("hot_sort_by", "amount"),
+        }
+    }
+
+@app.post("/scanner/universe/config")
+def set_hot_config(
+    min_price: int = None,
+    max_price: int = None,
+    market: str = None,      # ALL / KOSPI / KOSDAQ
+    sort_by: str = None,     # amount / volume
+):
+    """핫 풀 설정 저장 (DB에 영구 저장됨)"""
+    updates = {}
+
+    if min_price is not None:
+        if min_price < 0:
+            return {"status": "error", "message": "min_price는 0 이상이어야 해요"}
+        update_setting("hot_min_price", str(min_price))
+        updates["min_price"] = min_price
+
+    if max_price is not None:
+        if max_price < 0:
+            return {"status": "error", "message": "max_price는 0 이상이어야 해요"}
+        update_setting("hot_max_price", str(max_price))
+        updates["max_price"] = max_price
+
+    if market is not None:
+        if market not in ("ALL", "KOSPI", "KOSDAQ"):
+            return {"status": "error", "message": "market은 ALL/KOSPI/KOSDAQ 중 하나여야 해요"}
+        update_setting("hot_market", market)
+        updates["market"] = market
+
+    if sort_by is not None:
+        if sort_by not in ("amount", "volume"):
+            return {"status": "error", "message": "sort_by는 amount/volume 중 하나여야 해요"}
+        update_setting("hot_sort_by", sort_by)
+        updates["sort_by"] = sort_by
+
+    return {
+        "status": "ok",
+        "message": "설정 저장 완료",
+        "updated": updates
+    }
 
 @app.get("/logs/trades")
 def get_trade_log():
