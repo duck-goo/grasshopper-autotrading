@@ -400,6 +400,42 @@ async def run_scanner_now():
     asyncio.create_task(scanner_module.run_scanner())  # ✅ run_scanner()로!
     return {"status": "ok", "message": "스캔 시작!"}
 
+@app.post("/scanner/universe/refresh")
+def refresh_hot_universe(
+    min_price: int = 0,
+    max_price: int = 0,
+    market: str = "ALL",
+    sort_by: str = "amount",
+):
+    """핫 종목 풀을 즉시 갱신"""
+    count = scanner_module.update_hot_universe(min_price=1000)
+    return {
+        "status": "ok",
+        "count": count,
+        "data": scanner_module.hot_universe
+    }
+
+@app.get("/scanner/universe")
+def get_hot_universe():
+    """현재 핫 종목 풀 조회"""
+    import time
+    age = (time.time() - scanner_module.hot_universe_updated_at
+           if scanner_module.hot_universe_updated_at else 0)
+    return {
+        "status": "ok",
+        "count": len(scanner_module.hot_universe),
+        "age_seconds": int(age),
+        "data": scanner_module.hot_universe
+    }
+
+@app.post("/scanner/run/hot")
+async def run_hot_scanner():
+    """핫 풀만 스캔 (수동 실행용)"""
+    if scanner_module.scan_status["is_running"]:
+        return {"status": "error", "message": "이미 스캔 중이에요!"}
+    asyncio.create_task(scanner_module.run_scanner(use_hot_universe=True))
+    return {"status": "ok", "message": "핫 풀 스캔 시작!"}
+
 @app.get("/logs/trades")
 def get_trade_log():
     from database.logger import get_trade_logs

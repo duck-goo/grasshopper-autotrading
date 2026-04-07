@@ -13,10 +13,14 @@ from notification.telegram import send_message, send_order_confirm
 from notification.popup import send_signal_popup, send_popup
 from auth.token_manager import token_manager
 from shared_state import auto_buy_candidates
+from api.stock import get_volume_rank
 
 # 스캔 결과 저장
 scan_results = []
 temp_results = []
+# 핫 종목 풀
+hot_universe = []            # [{ticker, name, market, price}, ...]
+hot_universe_updated_at = 0  # 마지막 갱신 시각 (epoch seconds)
 scan_status = {
     "is_running": False,
     "total": 0,
@@ -32,6 +36,35 @@ alerted_scan = set()
 CONCURRENT_LIMIT = 3  # 동시에 3개씩 처리
 # 비동기 세션 + 세마포어로 동시 요청 제한
 CHUNK_SIZE = 100
+
+def update_hot_universe(min_price: int = 0,
+                        max_price: int = 0,
+                        markets: list = None,
+                        sort_by: str = "amount") -> int:
+    """
+    핫 종목 풀 갱신 - 거래대금 상위 종목으로 채움
+    KOSPI 30 + KOSDAQ 30 = 약 60개
+    """
+    global hot_universe, hot_universe_updated_at
+
+    token = token_manager.get_token()
+
+    kospi = get_volume_rank(token, "KOSPI", min_price=min_price)
+    time.sleep(0.5)  # API 호출 사이 살짝 쉬기 (KIS 한도 보호)
+    kosdaq = get_volume_rank(token, "KOSDAQ", min_price=min_price)
+
+    # 중복 제거 (혹시 모를 상황 대비)
+    seen = set()
+    merged = []
+    for stock in kospi + kosdaq:
+        if stock["ticker"] and stock["ticker"] not in seen:
+            seen.add(stock["ticker"])
+            merged.append(stock)
+
+    hot_universe = merged
+    hot_universe_updated_at = time.time()
+    print(f"🔥 핫 풀 갱신 완료: {len(hot_universe)}개 종목")
+    return len(hot_universe)
 
 async def fetch_stock_data(session: aiohttp.ClientSession, ticker: str, token: str) -> dict:
     """비동기 현재가 조회"""
@@ -270,8 +303,10 @@ async def scan_stock(session: aiohttp.ClientSession, stock: dict,
             if scan_status["scanned"] % 100 == 0:
                 print(f"📊 스캔 진행: {scan_status['scanned']}/{scan_status['total']}")
 
-async def run_scanner():
-    """전종목 조건식 스캐너 (비동기 병렬 처리)"""
+async def run_scanner(use_hot_universe: bool = False):
+    """전종목 조건식 스캐너 (비동기 병렬 처리)
+    use_hot_universe=True 면 핫 풀만, False 면 전종목 스캔
+    """
     global scan_results, scan_status, alerted_scan, temp_results
 
     if scan_status["is_running"]:
@@ -285,16 +320,24 @@ async def run_scanner():
         return
 
     token = token_manager.get_token()
-
-    if is_stock_list_outdated():
-        from api.stock import get_stock_list
-        from database.logger import save_stock_list
-        kospi = get_stock_list("KOSPI", token)
-        kosdaq = get_stock_list("KOSDAQ", token)
-        all_stocks = kospi + kosdaq
-        save_stock_list(all_stocks)
+    # 종목 리스트 결정
+    if use_hot_universe:
+        # 핫 풀이 비어있거나 1시간 이상 됐으면 자동 갱신
+        if not hot_universe or (time.time() - hot_universe_updated_at > 3600):
+            update_hot_universe(min_price=1000)
+        all_stocks = hot_universe
+        print(f"🔥 핫 풀 모드: {len(all_stocks)}개 종목 스캔")
     else:
-        all_stocks = get_stock_list_from_db()
+        if is_stock_list_outdated():
+            from api.stock import get_stock_list
+            from database.logger import save_stock_list
+            kospi = get_stock_list("KOSPI", token)
+            kosdaq = get_stock_list("KOSDAQ", token)
+            all_stocks = kospi + kosdaq
+            save_stock_list(all_stocks)
+        else:
+            all_stocks = get_stock_list_from_db()
+        print(f"🌍 전종목 모드: {len(all_stocks)}개 종목 스캔")
 
     if not all_stocks:
         print("❌ 종목 리스트 없음")
@@ -335,37 +378,37 @@ async def run_scanner():
 
 # ✅ 수정 - 장중/장외 구분해서 주기 다르게
 async def scanner_loop():
-    """스캐너 주기적 실행"""
-    print("🔍 전종목 스캐너 대기 중...")
+    """스캐너 주기적 실행(임시: 자동 전종목 스캔 비활성)"""
+    print("🔍 전종목 스캐너 수동 모드 (자동 실행 OFF)")
     while True:
-        try:
-            from datetime import datetime
-            now = datetime.now()
-            is_weekday = now.weekday() < 5
-            is_market_open = (
-                (now.hour == 9 and now.minute >= 0) or
-                (9 < now.hour < 15) or
-                (now.hour == 15 and now.minute <= 30)
-            )
+        # try:
+        #     from datetime import datetime
+        #     now = datetime.now()
+        #     is_weekday = now.weekday() < 5
+        #     is_market_open = (
+        #         (now.hour == 9 and now.minute >= 0) or
+        #         (9 < now.hour < 15) or
+        #         (now.hour == 15 and now.minute <= 30)
+        #     )
 
-            if is_weekday and is_market_open:
-                # ✅ 장중 - 스캔 완료되면 30초 쉬고 바로 재시작 (사실상 연속 스캔)
-                print("📈 장중 스캔 시작")
-                await run_scanner()
-                await asyncio.sleep(30)   # 30초만 쉬고 재시작
+        #     if is_weekday and is_market_open:
+        #         # ✅ 장중 - 스캔 완료되면 30초 쉬고 바로 재시작 (사실상 연속 스캔)
+        #         print("📈 장중 스캔 시작")
+        #         await run_scanner()
+        #         await asyncio.sleep(30)   # 30초만 쉬고 재시작
 
-            elif is_weekday and not is_market_open:
-                # 평일 장외 - 1시간마다 (종가 기준 서치)
-                print("🌙 장외 스캔 시작 (종가 기준)")
-                await run_scanner()
-                await asyncio.sleep(3600)
+        #     elif is_weekday and not is_market_open:
+        #         # 평일 장외 - 1시간마다 (종가 기준 서치)
+        #         print("🌙 장외 스캔 시작 (종가 기준)")
+        #         await run_scanner()
+        #         await asyncio.sleep(3600)
 
-            else:
-                # 주말 - 3시간마다
-                print("📅 주말 스캔 시작")
-                await run_scanner()
-                await asyncio.sleep(10800)
+        #     else:
+        #         # 주말 - 3시간마다
+        #         print("📅 주말 스캔 시작")
+        #         await run_scanner()
+        #         await asyncio.sleep(10800)
 
-        except Exception as e:
-            print(f"❌ 스캐너 루프 오류: {e}")
+        # except Exception as e:
+        #     print(f"❌ 스캐너 루프 오류: {e}")
             await asyncio.sleep(60)

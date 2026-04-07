@@ -188,3 +188,67 @@ def get_stock_list(market: str, token: str) -> list:
     except Exception as e:
         print(f"❌ 종목 리스트 오류: {e}")
         return []
+    
+def get_volume_rank(token: str, 
+                    market: str = "KOSPI",
+                    min_price: int = 0,
+                    max_price: int = 0,
+                    sort_by: str = "amount") -> list:
+    """
+    거래대금 상위 30개 종목 조회 (KIS 거래량 순위 API)
+    한 번 호출에 한 시장에서 30개씩 반환됨
+    """
+    url = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/volume-rank"
+
+    # 시장 코드: KOSPI=0001, KOSDAQ=1001
+    market_code = "0001" if market == "KOSPI" else "1001"
+
+    headers = {
+        "content-type":  "application/json",
+        "authorization": f"Bearer {token}",
+        "appkey":        os.getenv("MOCK_APP_KEY"),
+        "appsecret":     os.getenv("MOCK_APP_SECRET"),
+        "tr_id":         "FHPST01710000",
+    }
+
+    params = {
+        "FID_COND_MRKT_DIV_CODE": "J",
+        "FID_COND_SCR_DIV_CODE":  "20171",
+        "FID_INPUT_ISCD":         market_code,
+        "FID_DIV_CLS_CODE":       "0",            # 0 = 전체
+        "FID_BLNG_CLS_CODE":      "3",            # 3 = 거래대금 순
+        "FID_TRGT_CLS_CODE":      "111111111",    # 모두 포함
+        "FID_TRGT_EXLS_CLS_CODE": "0000000000",
+        "FID_INPUT_PRICE_1":      str(min_price), # 최소가격 필터
+        "FID_INPUT_PRICE_2":      "",
+        "FID_VOL_CNT":            "",
+        "FID_INPUT_DATE_1":       ""
+    }
+
+    try:
+        res = requests.get(url, headers=headers, params=params, timeout=10)
+        data = res.json()
+
+        if data.get("rt_cd") != "0":
+            print(f"❌ {market} 거래량 순위 실패: {data.get('msg1')}")
+            return []
+
+        output = data.get("output", [])
+        result = []
+        for item in output:
+            try:
+                result.append({
+                    "ticker": item.get("mksc_shrn_iscd"),
+                    "name":   item.get("hts_kor_isnm"),
+                    "market": market,
+                    "price":  int(item.get("stck_prpr", 0) or 0),
+                })
+            except (ValueError, TypeError):
+                continue
+
+        print(f"✅ {market} 거래대금 상위 {len(result)}개 조회 완료")
+        return result
+
+    except Exception as e:
+        print(f"❌ {market} 거래량 순위 예외: {e}")
+        return []
