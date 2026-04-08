@@ -51,22 +51,34 @@ class ConditionCreate(BaseModel):
 # ---- 앱 초기화 ----
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 각종 DB 초기화
+    """
+    FastAPI 앱 생명주기 관리
+    - 시작: DB 초기화 + 백그라운드 태스크 실행
+    - 종료: 백그라운드 태스크 취소
+    """
+    # ── 시작 시: DB 초기화 ──────────────────────
+    print("🚀 Auto Trader 서버 시작 중...")
     init_db()
     init_log_db()
     init_trade_db()
     init_settings_db()
     init_stock_list_db()
     init_condition_db()
+    print("✅ DB 초기화 완료")
 
-    # 백그라운드 작업 시작
-    task1 = asyncio.create_task(monitor_loop())
-    task2 = asyncio.create_task(start_telegram_bot())
-    task3 = asyncio.create_task(scanner_module.scanner_loop())
-    yield
-    task1.cancel()
-    task2.cancel()
-    task3.cancel()
+    # ── 시작 시: 백그라운드 태스크 실행 ─────────
+    task_monitor = asyncio.create_task(monitor_loop())
+    task_telegram = asyncio.create_task(start_telegram_bot())
+    task_scanner = asyncio.create_task(scanner_module.scanner_loop())
+    print("✅ 백그라운드 태스크 시작 완료")
+
+    yield  # ── 여기서 서버 가동 ──
+
+    # ── 종료 시: 백그라운드 태스크 취소 ─────────
+    print("🛑 서버 종료 중... 백그라운드 태스크 정리")
+    task_monitor.cancel()
+    task_telegram.cancel()
+    task_scanner.cancel()
 
 app = FastAPI(title="Auto Trader API", lifespan=lifespan)
 
@@ -520,3 +532,177 @@ def set_hot_config(
 def get_trade_log():
     from database.logger import get_trade_logs
     return {"status": "ok", "data": get_trade_logs()}
+
+# ───────────────────────────────────────
+# 🛑 비상 정지 시스템
+# ───────────────────────────────────────
+@app.post("/emergency-stop")
+def emergency_stop():
+    """
+    비상 정지: 자동매수/반자동 OFF + 스캐너 일시정지
+    실수 매수 폭주를 즉시 멈추기 위한 안전장치
+    """
+    try:
+        # 1. 자동매수 OFF
+        update_setting("auto_order", "false")
+        # 2. 반자동매수 OFF
+        update_setting("semi_auto_order", "false")
+        # 3. 스캐너 일시정지
+        scanner_module.set_scanner_enabled(False)
+
+        # 텔레그램 알림 (가능하면)
+        try:
+            send_message("🛑 <b>비상 정지 발동!</b>\n"
+                         "• 자동매수 OFF\n"
+                         "• 반자동매수 OFF\n"
+                         "• 스캐너 일시정지")
+        except Exception:
+            pass
+
+        print("🛑 비상 정지 발동! 자동매수 OFF + 스캐너 정지")
+        return {
+            "status": "ok",
+            "message": "비상 정지 완료",
+            "data": {
+                "auto_order": "false",
+                "semi_auto_order": "false",
+                "scanner_enabled": False,
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/emergency-resume")
+def emergency_resume():
+    """
+    스캐너 재개 (자동매수는 안전상 수동으로 다시 켜야 함)
+    """
+    try:
+        scanner_module.set_scanner_enabled(True)
+        print("✅ 스캐너 재개")
+        return {
+            "status": "ok",
+            "message": "스캐너 재개 완료 (자동매수는 설정에서 수동으로 켜주세요)",
+            "data": {"scanner_enabled": True}
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/system-status")
+def get_system_status():
+    """현재 시스템 상태 조회 (대시보드 배지용)"""
+    try:
+        s = get_settings()
+        return {
+            "status": "ok",
+            "data": {
+                "auto_order": s.get("auto_order", "false") == "true",
+                "semi_auto_order": s.get("semi_auto_order", "false") == "true",
+                "scanner_enabled": getattr(scanner_module, "scanner_enabled", True),
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    
+# ───────────────────────────────────────
+# 🔬 조건식 디버그 (튜닝/진단용)
+# ───────────────────────────────────────
+@app.get("/debug/condition")
+def debug_condition(ticker: str):
+    """
+    특정 종목에 대해 조건식 지표를 계산해서 보여줌
+    예: /debug/condition?ticker=005930
+    """
+    from api.stock import get_stock_history_long, get_stock_price
+    from strategy.condition import (
+        calculate_rsi, calculate_volume_ratio, calculate_macd, calculate_ma,
+        check_condition_v2
+    )
+
+    try:
+        token = token_manager.get_token()
+
+        # 1. 일봉 히스토리 (dict 리스트 반환)
+        history = get_stock_history_long(ticker, token)
+        if not history:
+            return {
+                "status": "error",
+                "message": "히스토리 데이터 없음",
+                "ticker": ticker
+            }
+
+        # 2. 현재가
+        price_data = get_stock_price(ticker, token)
+
+        # 3. closes / volumes 추출
+        closes = [d["close"] for d in history]
+        volumes = [d["volume"] for d in history]
+
+        # 4. 지표 계산
+        rsi = calculate_rsi(closes)
+        vol_ratio = calculate_volume_ratio(volumes)
+        ma5 = calculate_ma(closes, 5)
+        ma20 = calculate_ma(closes, 20)
+        macd, signal, hist = calculate_macd(closes)
+
+        # 5. 등락률 (API값 + 계산값)
+        change_rate_from_api = price_data.get("change_rate", "N/A")
+        change_rate_calc = None
+        if len(closes) >= 2 and closes[-2] > 0:
+            change_rate_calc = round(((closes[-1] - closes[-2]) / closes[-2]) * 100, 2)
+
+        # 6. 실제 조건식 3개 테스트 (관찰용 / 튜닝후보 / 실전)
+        test_conditions = {
+            "관찰용 (RSI≤50, VOL≥120%, CHG≥-5)": [
+                {"type": "RSI", "operator": "<=", "value": 50, "timeframe": "D"},
+                {"type": "VOLUME_RATIO", "operator": ">=", "value": 120, "timeframe": "D"},
+                {"type": "CHANGE_RATE", "operator": ">=", "value": -5, "timeframe": "D"},
+            ],
+            "튜닝후보 (RSI≤40, VOL≥130%, CHG≥-3)": [
+                {"type": "RSI", "operator": "<=", "value": 40, "timeframe": "D"},
+                {"type": "VOLUME_RATIO", "operator": ">=", "value": 130, "timeframe": "D"},
+                {"type": "CHANGE_RATE", "operator": ">=", "value": -3, "timeframe": "D"},
+            ],
+            "실전 (RSI≤35, VOL≥150%, CHG≥-3)": [
+                {"type": "RSI", "operator": "<=", "value": 35, "timeframe": "D"},
+                {"type": "VOLUME_RATIO", "operator": ">=", "value": 150, "timeframe": "D"},
+                {"type": "CHANGE_RATE", "operator": ">=", "value": -3, "timeframe": "D"},
+            ],
+        }
+
+        condition_results = {}
+        for name, items in test_conditions.items():
+            results = [bool(check_condition_v2(item, history)) for item in items]
+            condition_results[name] = {
+                "각 항목 결과": dict(zip(["RSI", "VOL", "CHG"], results)),
+                "AND 종합": bool(all(results)),
+            }
+
+        return {
+            "status": "ok",
+            "ticker": ticker,
+            "data_points": len(history),
+            "current_price": price_data.get("price", "N/A"),
+            "indicators": {
+                "RSI": float(rsi) if rsi is not None else None,
+                "VOLUME_RATIO(%)": float(vol_ratio) if vol_ratio is not None else None,
+                "MA5": float(ma5) if ma5 is not None else None,
+                "MA20": float(ma20) if ma20 is not None else None,
+                "MACD": float(macd) if macd is not None else None,
+                "MACD_signal": float(signal) if signal is not None else None,
+                "CHANGE_RATE_from_API": str(change_rate_from_api),
+                "CHANGE_RATE_calculated": change_rate_calc,
+            },
+            "last_3_closes": closes[-3:],
+            "last_3_volumes": volumes[-3:],
+            "조건식_테스트": condition_results,
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "status": "error",
+            "message": str(e),
+            "trace": traceback.format_exc()
+        }

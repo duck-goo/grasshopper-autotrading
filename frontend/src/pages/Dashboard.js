@@ -13,6 +13,7 @@ function Dashboard() {
   const [balance, setBalance] = useState(null);
   const [loading, setLoading] = useState(true);
   const [orderMsg, setOrderMsg] = useState('');
+  const [sysStatus, setSysStatus] = useState(null);
 
   const fetchData = async () => {
     // ✅ 잔고 - 실패해도 기존 데이터 유지
@@ -32,7 +33,15 @@ function Dashboard() {
     } catch (e) {
       console.error('관심종목 조회 실패:', e);
     }
-
+    // 시스템 상태 조회
+    try {
+      const sysRes = await axios.get(`${API}/system-status`);
+      if (sysRes.data.status === 'ok') {
+        setSysStatus(sysRes.data.data);
+      }
+    } catch (e) {
+      console.error('시스템 상태 조회 실패');
+    }
     setLoading(false);
 };
 
@@ -73,13 +82,125 @@ function Dashboard() {
     }
 
     setTimeout(() => setOrderMsg(''), 5000);
-};
+  };
+    const handleEmergencyStop = async () => {
+    const ok = window.confirm(
+      '🛑 정말 비상 정지하시겠습니까?\n\n' +
+      '• 자동매수가 즉시 OFF 됩니다\n' +
+      '• 반자동매수가 즉시 OFF 됩니다\n' +
+      '• 스캐너가 일시정지 됩니다\n\n' +
+      '※ 보유 종목은 매도되지 않습니다'
+    );
+    if (!ok) return;
+
+    try {
+      const res = await axios.post(`${API}/emergency-stop`);
+      if (res.data.status === 'ok') {
+        setOrderMsg('🛑 비상 정지 완료! 모든 자동 동작이 멈췄어요');
+        fetchData();
+      } else {
+        setOrderMsg('❌ 비상 정지 실패: ' + res.data.message);
+      }
+    } catch (e) {
+      setOrderMsg('❌ 비상 정지 오류 발생');
+    }
+    setTimeout(() => setOrderMsg(''), 5000);
+  };
+
+  const handleResume = async () => {
+    const ok = window.confirm(
+      '▶️ 스캐너를 재개하시겠습니까?\n\n' +
+      '※ 자동매수는 설정 페이지에서 따로 켜셔야 합니다'
+    );
+    if (!ok) return;
+
+    try {
+      const res = await axios.post(`${API}/emergency-resume`);
+      if (res.data.status === 'ok') {
+        setOrderMsg('✅ 스캐너 재개 완료');
+        fetchData();
+      }
+    } catch (e) {
+      setOrderMsg('❌ 재개 오류 발생');
+    }
+    setTimeout(() => setOrderMsg(''), 5000);
+  };
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
         <h2 style={{ fontSize: '20px' }}>📊🦗 메뚜기의 실시간 대시보드</h2>
         <button className="btn btn-primary" onClick={fetchData}>🔄 새로고침</button>
+      </div>
+      {/* 🛑 비상 정지 패널 */}
+      <div className="card" style={{
+        marginBottom: '24px',
+        background: sysStatus && !sysStatus.scanner_enabled ? '#4a1515' : '#161b22',
+        border: `2px solid ${sysStatus && !sysStatus.scanner_enabled ? '#f85149' : '#30363d'}`
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+          <div>
+            <div style={{ fontSize: '13px', color: '#8b949e', marginBottom: '6px' }}>시스템 상태</div>
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              <span style={{
+                padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold',
+                background: sysStatus?.scanner_enabled ? '#1a4731' : '#4a1515',
+                color: sysStatus?.scanner_enabled ? '#3fb950' : '#f85149'
+              }}>
+                스캐너: {sysStatus?.scanner_enabled ? '✅ ON' : '🛑 OFF'}
+              </span>
+              <span style={{
+                padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold',
+                background: sysStatus?.auto_order ? '#1a4731' : '#21262d',
+                color: sysStatus?.auto_order ? '#3fb950' : '#8b949e'
+              }}>
+                자동매수: {sysStatus?.auto_order ? '✅ ON' : '⏸️ OFF'}
+              </span>
+              <span style={{
+                padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold',
+                background: sysStatus?.semi_auto_order ? '#1a4731' : '#21262d',
+                color: sysStatus?.semi_auto_order ? '#3fb950' : '#8b949e'
+              }}>
+                반자동: {sysStatus?.semi_auto_order ? '✅ ON' : '⏸️ OFF'}
+              </span>
+            </div>
+          </div>
+
+          {sysStatus && !sysStatus.scanner_enabled ? (
+            <button
+              onClick={handleResume}
+              style={{
+                padding: '14px 28px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                background: '#1f6feb',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                cursor: 'pointer'
+              }}
+            >
+              ▶️ 스캐너 재개
+            </button>
+          ) : (
+            <button
+              onClick={handleEmergencyStop}
+              style={{
+                padding: '14px 28px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                background: '#da3633',
+                color: 'white',
+                border: '2px solid #f85149',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                boxShadow: '0 0 12px rgba(248, 81, 73, 0.4)'
+              }}
+            >
+              🛑 비상 정지
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 주문 메시지 */}

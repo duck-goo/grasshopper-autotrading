@@ -9,6 +9,28 @@ load_dotenv()
 
 BASE_URL = "https://openapivts.koreainvestment.com:29443"  # 모의투자
 
+# ─────────────────────────────────────────
+# 안전 변환 헬퍼 - None/빈문자열/콤마 등 방어
+# ─────────────────────────────────────────
+def safe_int(val, default=0):
+    """문자열/None/콤마 포함 값을 안전하게 정수로 변환"""
+    if val is None or val == "":
+        return default
+    try:
+        return int(float(str(val).replace(",", "")))
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_float(val, default=0.0):
+    """문자열/None/콤마 포함 값을 안전하게 실수로 변환"""
+    if val is None or val == "":
+        return default
+    try:
+        return float(str(val).replace(",", ""))
+    except (ValueError, TypeError):
+        return default
+
 def buy_stock(ticker: str, qty: int, token: str) -> dict:
     """국내 주식 매수 주문"""
     url = f"{BASE_URL}/uapi/domestic-stock/v1/trading/order-cash"
@@ -139,34 +161,25 @@ def get_balance(token: str) -> dict:
 
                 holdings = []
                 for item in output1:
-                    # 문자열 → 정수 변환 후 비교 (안전)
-                    try:
-                        qty = int(float(item.get("hldg_qty", "0") or 0))
-                    except (ValueError, TypeError):
-                        qty = 0
+                    # 안전하게 수량 변환
+                    qty = safe_int(item.get("hldg_qty"))
 
                     if qty <= 0:
                         continue  # 수량 0 이하는 무조건 제외
 
                     holdings.append({
-                        "ticker": item.get("pdno"),
-                        "name": item.get("prdt_name"),
+                        "ticker": item.get("pdno") or "",
+                        "name": item.get("prdt_name") or "",
                         "qty": str(qty),
-                        "avg_price": item.get("pchs_avg_pric"),
-                        "current_price": item.get("prpr"),
-                        "profit_loss": item.get("evlu_pfls_amt"),
-                        "profit_rate": item.get("evlu_pfls_rt"),
+                        "avg_price": str(safe_float(item.get("pchs_avg_pric"))),
+                        "current_price": str(safe_int(item.get("prpr"))),
+                        "profit_loss": str(safe_int(item.get("evlu_pfls_amt"))),
+                        "profit_rate": str(safe_float(item.get("evlu_pfls_rt"))),
                     })
 
                 summary = output2[0] if output2 else {}
-                
-                def safe_int(val, default=0):
-                    if val is None or val == "":
-                        return default
-                    try:
-                        return int(str(val).replace(",","") or default)
-                    except (ValueError, TypeError):
-                        return default
+
+                # 모듈 상단의 safe_int 사용 (중복 정의 제거)
                 dnca = safe_int(summary.get("dnca_tot_amt"))
                 thdt_buy = safe_int(summary.get("thdt_buy_amt"))
                 available = max(0, dnca - thdt_buy)
@@ -174,10 +187,11 @@ def get_balance(token: str) -> dict:
                 return {
                     "success": True,
                     "holdings": holdings,
-                    "total_eval": summary.get("tot_evlu_amt", "0"),
+                    "total_eval": str(safe_int(summary.get("tot_evlu_amt"))),
                     "available_cash": str(available),  # ✅ 예수금 - 당일매수금액
-                    "profit_loss": summary.get("evlu_pfls_smtl_amt", "0")
+                    "profit_loss": str(safe_int(summary.get("evlu_pfls_smtl_amt"))),
                 }
+            
             elif "초당 거래건수" in data.get("msg1", ""):
                 print(f"⚠️ 잔고 조회 제한 - {attempt+1}번째 재시도...")
                 time_module.sleep(1)  # 1초 대기 후 재시도

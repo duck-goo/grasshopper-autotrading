@@ -24,6 +24,12 @@ auto_positions = {}
 
 
 async def monitor_loop():
+    """
+    메인 모니터링 루프 (1분 주기)
+    - 자동매수 후보 처리
+    - 보유 포지션 익절/손절 체크
+    - 관심종목 시세 모니터링
+    """
     global balance_cache, balance_last_updated
     print("🔍 모니터링 시작!")
 

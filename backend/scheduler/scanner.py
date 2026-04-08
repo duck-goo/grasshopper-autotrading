@@ -23,6 +23,8 @@ hot_universe = []            # [{ticker, name, market, price}, ...]
 hot_universe_updated_at = 0  # 마지막 갱신 시각 (epoch seconds)
 # 양보 모드 - 다른 API가 급할 때 스캐너 잠시 멈춤
 scanner_pause_until = 0 # 이 시각까지 스캐너 대기
+# 🛑 비상 정지 - 스캐너 완전 OFF (True=작동, False=정지)
+scanner_enabled = True
 scan_status = {
     "is_running": False,
     "total": 0,
@@ -49,6 +51,15 @@ def request_scanner_pause(seconds: float = 2.0):
     new_until = time.time() + seconds
     if new_until > scanner_pause_until:
         scanner_pause_until = new_until
+
+def set_scanner_enabled(enabled: bool):
+    """
+    스캐너 ON/OFF 제어 (비상 정지용)
+    False면 두 스캐너 루프가 다음 사이클부터 작업을 건너뜀
+    """
+    global scanner_enabled
+    scanner_enabled = bool(enabled)
+    print(f"{'✅' if enabled else '🛑'} 스캐너 {'활성화' if enabled else '비상정지'}")
 
 def update_hot_universe(min_price: int = None,
                         max_price: int = None,
@@ -232,13 +243,21 @@ async def fetch_intraday(session: aiohttp.ClientSession, ticker: str, token: str
         return []
 
 async def scan_stock(session: aiohttp.ClientSession, stock: dict,
-                     conditions: list, token: str, semaphore: asyncio.Semaphore):
+                     conditions: list, token: str, semaphore: asyncio.Semaphore,
+                     settings: dict):
     """단일 종목 스캔"""
     global scan_results, temp_results
 
     async with semaphore:
+        # 🛑 비상정지 상태면 즉시 종료 (진행 중인 스캔도 빠르게 빠져나옴)
+        if not scanner_enabled:
+            return
+
         # ✅ 양보 모드 체크 - 다른 API가 처리될 때까지 대기
         while time.time() < scanner_pause_until:
+            # 대기 중에도 비상정지 체크
+            if not scanner_enabled:
+                return
             await asyncio.sleep(0.2)
 
         ticker = stock["ticker"]
@@ -320,7 +339,6 @@ async def scan_stock(session: aiohttp.ClientSession, stock: dict,
                     scan_status["found"] += 1
 
                     # 자동매수 후보 추가
-                    settings = get_settings()
                     if settings.get("auto_order") == "true":
                         already_added = any(
                             c["ticker"] == ticker and c["condition_id"] == condition["id"]
@@ -339,7 +357,6 @@ async def scan_stock(session: aiohttp.ClientSession, stock: dict,
                             print(f"🎯 자동매수 후보 추가: {name}({ticker}) - {condition['name']}")
 
                     if alert_key not in alerted_scan:
-                        settings = get_settings()
                         msg = (
                             f"🔍 <b>조건검색 종목 발견!</b>\n"
                             f"조건식: {condition['name']}\n"
@@ -415,15 +432,23 @@ async def run_scanner(use_hot_universe: bool = False):
     start_time = time.time()
     print(f"🔍 전종목 스캔 시작: {len(all_stocks)}개 종목 / {len(conditions)}개 조건식")
 
+    # ✅ settings는 스캔 시작할 때 1번만 가져옴 (3584번 → 1번)
+    settings_snapshot = get_settings()
+
     # 비동기 세션 + 배치 처리 (다른 API 요청에 숨통 트여주기)
     semaphore = asyncio.Semaphore(CONCURRENT_LIMIT)
     BATCH_SIZE = 50  # 50개씩 끊어서 처리
 
     async with aiohttp.ClientSession() as session:
         for i in range(0, len(all_stocks), BATCH_SIZE):
+            # 🛑 비상정지 체크 - 배치 시작 전 확인
+            if not scanner_enabled:
+                print("🛑 비상정지 감지 - 스캔 중단")
+                break
+
             batch = all_stocks[i:i + BATCH_SIZE]
             tasks = [
-                scan_stock(session, stock, conditions, token, semaphore)
+                scan_stock(session, stock, conditions, token, semaphore, settings_snapshot)
                 for stock in batch
             ]
             await asyncio.gather(*tasks)
@@ -453,6 +478,11 @@ async def slow_scanner_loop():
 
     while True:
         try:
+            # 🛑 비상정지 상태면 스킵
+            if not scanner_enabled:
+                await asyncio.sleep(10)
+                continue
+
             from datetime import datetime
             now = datetime.now()
             is_weekday = now.weekday() < 5
@@ -500,6 +530,11 @@ async def fast_scanner_loop():
 
     while True:
         try:
+            # 🛑 비상정지 상태면 스킵
+            if not scanner_enabled:
+                await asyncio.sleep(10)
+                continue
+
             from datetime import datetime
             now = datetime.now()
             is_weekday = now.weekday() < 5

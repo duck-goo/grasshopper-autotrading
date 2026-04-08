@@ -203,6 +203,17 @@ def check_condition_v2(condition: dict, data: list) -> bool:
             return _compare(current_price, condition["operator"], condition["value"])
 
         elif ctype == "CHANGE_RATE":
+            # ✅ 1순위: 데이터에 change_rate 필드가 이미 있으면 그대로 사용
+            #    (실시간 스캐너 경로에서 KIS API가 직접 등락률을 넘겨줌)
+            last = data[-1] if data else {}
+            if "change_rate" in last and last["change_rate"] not in (None, "", 0):
+                try:
+                    change_rate = float(str(last["change_rate"]).replace("%", "").strip())
+                    return _compare(change_rate, condition["operator"], condition["value"])
+                except (ValueError, TypeError):
+                    pass  # 변환 실패하면 아래 종가 기반 계산으로 폴백
+
+            # 2순위: 종가 2개로 계산 (일봉 히스토리 경로)
             if len(closes) < 2:
                 return False
             change_rate = ((closes[-1] - closes[-2]) / closes[-2]) * 100
