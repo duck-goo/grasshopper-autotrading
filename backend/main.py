@@ -27,7 +27,8 @@ from database.logger import (
     get_stock_list_from_db, is_stock_list_outdated,
     init_condition_db, save_condition, get_conditions,
     delete_condition, toggle_condition, log_alert,
-    init_trade_db, log_trade
+    init_trade_db, log_trade,
+    init_prev_close_db, get_prev_close_stats,
 )
 from scheduler import scanner as scanner_module
 
@@ -64,6 +65,7 @@ async def lifespan(app: FastAPI):
     init_settings_db()
     init_stock_list_db()
     init_condition_db()
+    init_prev_close_db()
     print("✅ DB 초기화 완료")
 
     # ── 시작 시: 백그라운드 태스크 실행 ─────────
@@ -415,7 +417,7 @@ async def run_scanner_now():
     return {"status": "ok", "message": "스캔 시작!"}
 
 @app.post("/scanner/universe/refresh")
-def refresh_hot_universe(
+async def refresh_hot_universe(
     min_price: int = None,
     max_price: int = None,
     market: str = None,
@@ -425,6 +427,8 @@ def refresh_hot_universe(
     핫 종목 풀 즉시 갱신
     옵션 없이 호출하면 settings DB의 기본값 사용
     옵션 주면 그 값으로 1회 갱신 (DB에 저장은 안 됨)
+
+    ⚠️ 새 구조: 전종목 현재가 조회 방식이라 완료까지 1~2분 걸릴 수 있음
 
     예시:
       POST /scanner/universe/refresh                          → DB 기본값
@@ -464,6 +468,20 @@ def get_hot_universe():
         "count": len(scanner_module.hot_universe),
         "age_seconds": int(age),
         "data": scanner_module.hot_universe
+    }
+
+@app.get("/scanner/prev-close/status")
+def get_prev_close_status_api():
+    """
+    전일종가 캐시 갱신 상태 조회
+    UI에 진행률 표시할 때 사용
+    """
+    stats = get_prev_close_stats()
+    progress = scanner_module.prev_close_status
+    return {
+        "status": "ok",
+        "stats": stats,        # {total, cached, fresh}
+        "progress": progress,  # {is_running, total, done, failed, started_at, last_update}
     }
 
 @app.post("/scanner/run/hot")

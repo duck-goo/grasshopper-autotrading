@@ -350,3 +350,130 @@ def get_trade_logs(limit=100):
     ).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+# ============================================================
+# 🔥 전일종가 캐시 (핫풀용)
+# ============================================================
+def init_prev_close_db():
+    """전일 종가 캐시 테이블 초기화"""
+    conn = get_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS stock_prev_close (
+            ticker TEXT PRIMARY KEY,
+            name TEXT,
+            market TEXT,
+            prev_close INTEGER,
+            volume INTEGER DEFAULT 0,
+            amount INTEGER DEFAULT 0,
+            updated_date TEXT,
+            updated_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+    print("✅ 전일종가 캐시 DB 초기화 완료")
+
+
+def save_prev_close(ticker: str, name: str, market: str,
+                    prev_close: int, volume: int = 0, amount: int = 0):
+    """전일 종가 저장 (upsert)"""
+    from datetime import datetime
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    conn = get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO stock_prev_close
+        (ticker, name, market, prev_close, volume, amount, updated_date, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (ticker, name, market, prev_close, volume, amount, today, now.isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_prev_close_cache(markets: list = None,
+                         min_price: int = 0,
+                         max_price: int = 0) -> list:
+    """전일 종가 캐시 조회 (필터링 옵션)"""
+    conn = get_db()
+    query = "SELECT ticker, name, market, prev_close, volume, amount FROM stock_prev_close WHERE 1=1"
+    params = []
+    if markets:
+        placeholders = ",".join("?" * len(markets))
+        query += f" AND market IN ({placeholders})"
+        params.extend(markets)
+    if min_price > 0:
+        query += " AND prev_close >= ?"
+        params.append(min_price)
+    if max_price > 0:
+        query += " AND prev_close <= ?"
+        params.append(max_price)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_stale_prev_close_tickers() -> list:
+    """
+    아직 갱신이 필요한 종목 리스트 조회
+    기준: 가장 최근 장 마감 시각보다 캐시가 오래된 종목
+
+    - 평일 15:30 이후 → 오늘 마감 기준
+    - 평일 15:30 이전 → 어제(또는 직전 영업일) 마감 기준
+    - 주말 → 직전 금요일 마감 기준
+    """
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    # 가장 최근 마감 시각 계산
+    today_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+
+    if now >= today_close and now.weekday() < 5:
+        # 평일 마감 이후 → 오늘 마감
+        last_close = today_close
+    else:
+        # 평일 마감 이전이거나 주말 → 직전 영업일 마감 찾기
+        last_close = today_close - timedelta(days=1)
+        while last_close.weekday() >= 5:  # 토(5), 일(6) 건너뛰기
+            last_close -= timedelta(days=1)
+
+    cutoff_iso = last_close.isoformat()
+
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT s.ticker, s.name, s.market
+        FROM stock_list s
+        LEFT JOIN stock_prev_close p ON s.ticker = p.ticker
+        WHERE p.ticker IS NULL OR p.updated_at < ?
+        ORDER BY s.ticker
+    """, (cutoff_iso,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_prev_close_stats() -> dict:
+    """
+    캐시 통계 (전체/캐시됨/마지막 마감 이후 갱신된 종목 수)
+    """
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    today_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+
+    if now >= today_close and now.weekday() < 5:
+        last_close = today_close
+    else:
+        last_close = today_close - timedelta(days=1)
+        while last_close.weekday() >= 5:
+            last_close -= timedelta(days=1)
+
+    cutoff_iso = last_close.isoformat()
+
+    conn = get_db()
+    total = conn.execute("SELECT COUNT(*) as c FROM stock_list").fetchone()["c"]
+    cached = conn.execute("SELECT COUNT(*) as c FROM stock_prev_close").fetchone()["c"]
+    fresh = conn.execute(
+        "SELECT COUNT(*) as c FROM stock_prev_close WHERE updated_at >= ?",
+        (cutoff_iso,)
+    ).fetchone()["c"]
+    conn.close()
+    return {"total": total, "cached": cached, "fresh": fresh}

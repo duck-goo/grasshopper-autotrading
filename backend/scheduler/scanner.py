@@ -6,7 +6,9 @@ import os
 from database.logger import (
     get_conditions, get_stock_list_from_db,
     is_stock_list_outdated, save_stock_list,
-    log_alert, get_settings
+    log_alert, get_settings,
+    save_prev_close, get_prev_close_cache,
+    get_stale_prev_close_tickers, get_prev_close_stats,
 )
 from strategy.condition import check_condition_v2
 from notification.telegram import send_message, send_order_confirm
@@ -25,12 +27,29 @@ hot_universe_updated_at = 0  # 마지막 갱신 시각 (epoch seconds)
 scanner_pause_until = 0 # 이 시각까지 스캐너 대기
 # 🛑 비상 정지 - 스캐너 완전 OFF (True=작동, False=정지)
 scanner_enabled = True
+# 🔥 핫풀 초기 갱신 완료 신호 (서버 시작 시 slow_scanner_loop가 이걸 기다림)
+hot_pool_ready = asyncio.Event()
+# 🔒 핫풀 갱신 중복 방지 플래그
+hot_refresh_in_progress = False
+# 📦 전일종가 갱신 상태 (UI 표시용)
+prev_close_status = {
+    "is_running": False,
+    "total": 0,
+    "done": 0,
+    "failed": 0,
+    "started_at": None,
+    "last_update": None,
+}
+
+prev_close_filling = False
+
 scan_status = {
     "is_running": False,
     "total": 0,
-    "scanned": 0,
-    "last_scan": None,
-    "found": 0
+    "done": 0,
+    "failed": 0,
+    "started_at": None,
+    "last_update": None,
 }
 
 # 중복 알림 방지
@@ -62,18 +81,15 @@ def set_scanner_enabled(enabled: bool):
     print(f"{'✅' if enabled else '🛑'} 스캐너 {'활성화' if enabled else '비상정지'}")
 
 def update_hot_universe(min_price: int = None,
-                        max_price: int = None,
-                        markets: list = None,
-                        sort_by: str = None) -> int:
+                       max_price: int = None,
+                       markets: list = None,
+                       sort_by: str = None) -> int:
     """
-    핫 종목 풀 갱신
-    인자가 None이면 settings DB에서 기본값 읽어옴
+    핫 종목 풀 갱신 (전일종가 캐시 기반 - 즉시 완료)
 
-    Args:
-        min_price: 최소 현재가 (None = DB값, 0 = 제한 없음)
-        max_price: 최대 현재가 (None = DB값, 0 = 제한 없음)
-        markets:   스캔할 시장 리스트 (None = DB값)
-        sort_by:   "amount" / "volume" (None = DB값)
+    이전 방식: 매번 KIS API로 전종목 현재가 조회 (느림, rate limit 문제)
+    현재 방식: prev_close_refresh_loop가 백그라운드로 채워둔 캐시에서 필터링만
+              → DB 조회만 하므로 즉시 완료
     """
     global hot_universe, hot_universe_updated_at
 
@@ -105,35 +121,151 @@ def update_hot_universe(min_price: int = None,
             markets = ["KOSPI", "KOSDAQ"]
     # ──────────────────────────────────────────────────
 
-    token = token_manager.get_token()
+    # 캐시에서 필터링 조회 (즉시 완료)
+    rows = get_prev_close_cache(
+        markets=markets,
+        min_price=min_price,
+        max_price=max_price
+    )
 
-    all_stocks = []
-    for idx, market in enumerate(markets):
-        stocks = get_volume_rank(
-            token,
-            market=market,
-            min_price=min_price,
-            max_price=max_price,
-            sort_by=sort_by,
-        )
-        all_stocks.extend(stocks)
-        if idx < len(markets) - 1:
-            time.sleep(0.5)
+    if not rows:
+        stats = get_prev_close_stats()
+        print(f"⚠️ [핫풀] 전일종가 캐시가 비어있어요. "
+              f"백그라운드 갱신 진행 상황: {stats['cached']}/{stats['total']} "
+              f"(오늘 갱신: {stats['fresh']}개)")
+        hot_universe = []
+        hot_universe_updated_at = time.time()
+        return 0
 
-    # 중복 제거
-    seen = set()
-    merged = []
-    for stock in all_stocks:
-        if stock["ticker"] and stock["ticker"] not in seen:
-            seen.add(stock["ticker"])
-            merged.append(stock)
+    # 정렬 (거래대금 / 거래량 / 가격순 폴백)
+    if sort_by == "amount":
+        rows.sort(key=lambda x: x.get("amount", 0) or 0, reverse=True)
+    elif sort_by == "volume":
+        rows.sort(key=lambda x: x.get("volume", 0) or 0, reverse=True)
+    else:
+        rows.sort(key=lambda x: x.get("prev_close", 0) or 0, reverse=True)
 
-    hot_universe = merged
+    hot_universe = [
+        {
+            "ticker": r["ticker"],
+            "name":   r["name"],
+            "market": r["market"],
+            "price":  r["prev_close"],   # 전일 종가를 가격으로 표시
+            "volume": r.get("volume", 0),
+            "amount": r.get("amount", 0),
+        }
+        for r in rows
+    ]
     hot_universe_updated_at = time.time()
 
-    print(f"🔥 핫 풀 갱신 완료: {len(hot_universe)}개 종목 "
-          f"(시장: {'/'.join(markets)}, 가격: {min_price:,}~{max_price:,}, 정렬: {sort_by})")
+    print(f"✅ 핫풀 갱신 완료: {len(hot_universe)}개 종목 "
+          f"(시장: {'/'.join(markets)}, 가격: {min_price:,}~{max_price:,}, "
+          f"정렬: {sort_by}, 출처: 전일종가 캐시)")
     return len(hot_universe)
+
+async def _fetch_prev_close_one(session: aiohttp.ClientSession,
+                                stock: dict,
+                                token: str) -> dict:
+    """
+    단일 종목 전일종가 + 거래량 + 거래대금 조회 (디버그 버전)
+    실패 시 상세 원인을 반환
+    """
+    ticker = stock.get("ticker", "")
+    url = "https://openapivts.koreainvestment.com:29443/uapi/domestic-stock/v1/quotations/inquire-price"
+    headers = {
+        "content-type":  "application/json",
+        "authorization": f"Bearer {token}",
+        "appkey":        os.getenv("MOCK_APP_KEY"),
+        "appsecret":     os.getenv("MOCK_APP_SECRET"),
+        "tr_id":         "FHKST01010100"
+    }
+    params = {
+        "FID_COND_MRKT_DIV_CODE": "J",
+        "FID_INPUT_ISCD":         ticker
+    }
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with session.get(url, headers=headers, params=params, timeout=timeout) as res:
+            # HTTP 상태 코드 먼저 확인
+            if res.status != 200:
+                body_text = await res.text()
+                return {
+                    "success": False,
+                    "error": f"HTTP {res.status}: {body_text[:200]}"
+                }
+
+            try:
+                data = await res.json()
+            except Exception as je:
+                body_text = await res.text()
+                return {
+                    "success": False,
+                    "error": f"JSON 파싱 실패: {je} / body: {body_text[:200]}"
+                }
+
+            # KIS API 응답 코드 체크
+            rt_cd = data.get("rt_cd", "")
+            if rt_cd != "0":
+                return {
+                    "success": False,
+                    "error": f"rt_cd={rt_cd}, msg_cd={data.get('msg_cd', '')}, msg={data.get('msg1', '')}"
+                }
+
+            output = data.get("output")
+            if not output:
+                return {
+                    "success": False,
+                    "error": f"output 없음: keys={list(data.keys())}"
+                }
+
+            # 전일 종가 추출 (장중/장외에 따라 필드가 다름)
+            # 1순위: stck_prdy_clpr (전일종가)
+            # 2순위: stck_sdpr      (기준가 - 장중에 전일종가로 대체)
+            # 3순위: stck_prpr      (현재가 - 최후 폴백, 장외이면 종가)
+            prev_close = 0
+            used_field = ""
+
+            for field in ("stck_prdy_clpr", "stck_sdpr", "stck_prpr"):
+                raw = output.get(field, "")
+                try:
+                    val = int(float(raw or 0))
+                except (ValueError, TypeError):
+                    val = 0
+                if val > 0:
+                    prev_close = val
+                    used_field = field
+                    break
+
+            if prev_close <= 0:
+                # 모든 필드가 0이면 디버깅용으로 주요 필드 값 로깅
+                debug = {k: output.get(k, "∅") for k in (
+                    "stck_prdy_clpr", "stck_sdpr", "stck_prpr", "hts_kor_isnm"
+                )}
+                return {
+                    "success": False,
+                    "error": f"all price fields empty: {debug}"
+                }
+
+            volume = int(output.get("acml_vol", 0) or 0)
+            amount = int(output.get("acml_tr_pbmn", 0) or 0)
+
+            return {
+                "success":    True,
+                "prev_close": prev_close,
+                "volume":     volume,
+                "amount":     amount,
+            }
+
+    except asyncio.TimeoutError:
+        return {"success": False, "error": "timeout (10초 초과)"}
+    except aiohttp.ClientError as ce:
+        return {"success": False, "error": f"ClientError: {type(ce).__name__}: {ce}"}
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": f"{type(e).__name__}: {e}\n{traceback.format_exc()[:500]}"
+        }
 
 async def fetch_stock_data(session: aiohttp.ClientSession, ticker: str, token: str) -> dict:
     """비동기 현재가 조회"""
@@ -403,7 +535,7 @@ async def run_scanner(use_hot_universe: bool = False):
     if use_hot_universe:
         # 핫 풀이 비어있거나 1시간 이상 됐으면 자동 갱신
         if not hot_universe or (time.time() - hot_universe_updated_at > 3600):
-            update_hot_universe(min_price=1000)
+            update_hot_universe()  # DB 설정 사용
         all_stocks = hot_universe
         print(f"🔥 핫 풀 모드: {len(all_stocks)}개 종목 스캔")
     else:
@@ -467,14 +599,23 @@ async def run_scanner(use_hot_universe: bool = False):
 async def slow_scanner_loop():
     """
     전종목 스캐너 루프 (느린 루프)
-    - 장중: 30분마다 1회
-    - 장외: 1시간마다 1회
-    - 주말: 6시간마다 1회
+    - 핫풀 초기 갱신 완료를 기다린 후에 시작 (API 대역폭 양보)
     """
     print("🌐 전종목 스캐너 루프 시작 (30분 주기)")
 
-    # 서버 시작 직후 1분 대기 (다른 초기화 마무리 시간)
-    await asyncio.sleep(60)
+    # ── 🔥 핫풀 초기 갱신이 끝날 때까지 대기 (최대 10분) ──
+    print("⏳ [전종목] 핫풀 초기 갱신 완료를 기다리는 중...")
+    try:
+        await asyncio.wait_for(hot_pool_ready.wait(), timeout=600)
+        print("✅ [전종목] 핫풀 준비 완료")
+    except asyncio.TimeoutError:
+        print("⚠️ [전종목] 핫풀 대기 10분 초과 - 강제로 진행합니다")
+
+    # ── 🔒 전일종가 캐시가 먼저 채워질 시간을 확보 (서버 부팅 직후) ──
+    # prev_close_refresh_loop가 10초 지연 후 시작하므로, 여기서는 15초 대기
+    # 그 후 prev_close_filling 플래그가 세팅될 때까지 기다림
+    print("⏳ [전종목] 전일종가 루프 선점 대기 중 (15초)...")
+    await asyncio.sleep(15)
 
     while True:
         try:
@@ -482,6 +623,15 @@ async def slow_scanner_loop():
             if not scanner_enabled:
                 await asyncio.sleep(10)
                 continue
+
+            # 🔒 전일종가 캐시가 채워지는 중이면 대기 (API 대역폭 양보)
+            if prev_close_filling:
+                print("⏸️ [전종목] 전일종가 갱신 중 - 대기")
+                while prev_close_filling:
+                    await asyncio.sleep(10)
+                print("▶️ [전종목] 전일종가 갱신 완료 - 재개")
+                # 재개 직후 잠깐 쉬어 rate limit 여유 확보
+                await asyncio.sleep(3)
 
             from datetime import datetime
             now = datetime.now()
@@ -515,18 +665,29 @@ async def slow_scanner_loop():
 async def fast_scanner_loop():
     """
     핫풀 스캐너 루프 (빠른 루프)
-    - 30초마다 1회
-    - 핫풀 갱신 → 핫풀 스캔
-    - 전종목 스캔이 돌고 있으면 이번 사이클은 건너뜀
+    - 서버 시작 시 즉시 핫풀 갱신 (전종목 스캔보다 먼저!)
+    - 이후 10분마다 자동 갱신 + 30초마다 핫풀 스캔
     """
     print("🔥 핫풀 스캐너 루프 시작 (30초 주기)")
 
-    # 서버 시작 직후 30초 대기 (전종목 루프와 시작 타이밍 분리)
-    await asyncio.sleep(30)
+    # 서버 시작 직후 5초 대기 (초기 로딩 마무리)
+    await asyncio.sleep(5)
 
-    # 핫풀 갱신 주기: 매 루프마다 안 하고, 일정 주기로만
+    # 핫풀 갱신 주기 설정
     HOT_REFRESH_INTERVAL = 600  # 10분마다 핫풀 갱신
     last_hot_refresh = 0
+
+    # ── 🔥 최초 1회 즉시 갱신 (전종목 스캔보다 먼저!) ──
+    print("🔄 [핫풀] 초기 갱신 시작 (서버 부팅 직후, 전종목 스캔보다 우선)...")
+    try:
+        update_hot_universe()
+        last_hot_refresh = time.time()
+    except Exception as e:
+        print(f"⚠️ [핫풀] 초기 갱신 실패: {e}")
+    finally:
+        # 성공이든 실패든 반드시 신호 발송 (slow_scanner_loop가 무한 대기하지 않게)
+        hot_pool_ready.set()
+        print("📣 [핫풀] 초기화 완료 신호 발송 → 전종목 루프 해제")
 
     while True:
         try:
@@ -534,6 +695,13 @@ async def fast_scanner_loop():
             if not scanner_enabled:
                 await asyncio.sleep(10)
                 continue
+
+            # 🔒 전일종가 캐시가 채워지는 중이면 대기 (API 대역폭 양보)
+            if prev_close_filling:
+                print("⏸️ [전종목] 전일종가 갱신 중 - 대기")
+                while prev_close_filling:
+                    await asyncio.sleep(10)
+                print("▶️ [전종목] 전일종가 갱신 완료 - 재개")
 
             from datetime import datetime
             now = datetime.now()
@@ -576,11 +744,181 @@ async def fast_scanner_loop():
             print(f"❌ 핫풀 스캐너 루프 오류: {e}")
             await asyncio.sleep(30)
 
+async def prev_close_refresh_loop():
+    """
+    전일종가 캐시를 백그라운드로 채우는 루프
+    - 마지막 마감(15:30) 이후 갱신 안 된 종목만 대상
+    - 전종목 스캔이 돌고 있으면 그 배치가 끝날 때까지 대기
+    - 호출할 때마다 request_scanner_pause로 다른 스캔에게 양보 요청
+    """
+    global prev_close_filling
+
+    print("📦 전일종가 캐시 루프 시작")
+
+    # 서버 시작 직후 잠깐 대기 (다른 초기화 마무리)
+    await asyncio.sleep(10)
+
+    while True:
+        try:
+            # 🛑 비상정지 체크
+            if not scanner_enabled:
+                await asyncio.sleep(10)
+                continue
+
+            # 종목 마스터가 비어있으면 잠시 후 재시도
+            master = get_stock_list_from_db()
+            if not master:
+                print("📦 [전일종가] 종목 마스터가 비어있음 - 60초 후 재시도")
+                await asyncio.sleep(60)
+                continue
+
+            # 갱신 필요한 종목만 조회
+            stale = get_stale_prev_close_tickers()
+
+            if not stale:
+                stats = get_prev_close_stats()
+                print(f"📦 [전일종가] 모두 신선함 ({stats['fresh']}/{stats['total']}) - 1시간 후 재확인")
+                prev_close_filling = False
+                await asyncio.sleep(3600)
+                continue
+
+            # 갱신이 필요한 상태 - 플래그 ON (전종목 스캔에게 대기하라고 알림)
+            prev_close_filling = True
+
+            total = len(stale)
+            est_min = total * 0.75 / 60
+            print(f"📦 [전일종가] 갱신 시작: {total}개 종목 (예상 소요: 약 {est_min:.1f}분)")
+            print(f"📦 [전일종가] 갱신 동안 전종목 스캔은 대기합니다")
+
+            # 현재 전종목 스캔이 돌고 있으면 완료까지 대기
+            if scan_status["is_running"]:
+                print("📦 [전일종가] 전종목 스캔 완료 대기 중...")
+                while scan_status["is_running"]:
+                    await asyncio.sleep(2)
+                print("📦 [전일종가] 전종목 스캔 완료 - 갱신 시작")
+
+            prev_close_status["is_running"] = True
+            prev_close_status["total"] = total
+            prev_close_status["done"] = 0
+            prev_close_status["failed"] = 0
+            prev_close_status["started_at"] = time.time()
+
+            token = token_manager.get_token()
+
+            token = token_manager.get_token()
+
+            async def _run_batch(targets: list, label: str) -> list:
+                """targets를 순회하며 갱신, 실패한 종목 리스트 반환"""
+                failed_list = []
+                async with aiohttp.ClientSession() as session:
+                    for idx, stock in enumerate(targets):
+                        # 🛑 비상정지 체크
+                        if not scanner_enabled:
+                            print(f"🛑 [전일종가:{label}] 비상정지 - 중단")
+                            break
+
+                        # 다른 스캔에 양보 요청
+                        request_scanner_pause(1.5)
+
+                        result = await _fetch_prev_close_one(session, stock, token)
+
+                        if result.get("success"):
+                            save_prev_close(
+                                stock["ticker"],
+                                stock.get("name", ""),
+                                stock.get("market", ""),
+                                result["prev_close"],
+                                result.get("volume", 0),
+                                result.get("amount", 0),
+                            )
+                            prev_close_status["done"] += 1
+                        else:
+                            failed_list.append(stock)
+                            prev_close_status["failed"] += 1
+                            # 초반 샘플 출력
+                            if prev_close_status["failed"] <= 3:
+                                err = result.get("error", "unknown")
+                                print(f"  ❌ [전일종가:{label}] {stock['ticker']}: {err}")
+
+                        prev_close_status["last_update"] = time.time()
+
+                        # 진행 로그 (50개마다)
+                        if (idx + 1) % 50 == 0:
+                            elapsed_inner = time.time() - prev_close_status["started_at"]
+                            print(f"  [전일종가:{label}] {idx+1}/{len(targets)} 진행 "
+                                  f"(누적 성공: {prev_close_status['done']}, "
+                                  f"누적 실패: {prev_close_status['failed']}, "
+                                  f"경과: {elapsed_inner:.0f}초)")
+
+                        # 안전 페이스
+                        await asyncio.sleep(0.75)
+
+                return failed_list
+
+            # ── 1차 실행 ──
+            failed_round1 = await _run_batch(stale, "1차")
+
+            # ── 2차 재시도 (1차 실패분만) ──
+            if failed_round1 and scanner_enabled:
+                # 재시도 전 잠깐 휴식 (API 쿨다운)
+                print(f"🔁 [전일종가] 1차 완료, 실패 {len(failed_round1)}개 재시도 전 "
+                      f"10초 휴식...")
+                await asyncio.sleep(10)
+                # 재시도는 실패 카운트 일시 리셋해서 재집계 가능하게
+                retry_before_failed = prev_close_status["failed"]
+                prev_close_status["failed"] = 0
+
+                failed_round2 = await _run_batch(failed_round1, "2차재시도")
+
+                # 2차 실패는 prev_close_status["failed"]에 이미 집계됨
+                # 1차 성공분은 그대로 두고, 2차에서 구제된 개수만큼 총 실패 감소
+                rescued = len(failed_round1) - len(failed_round2)
+                prev_close_status["failed"] = retry_before_failed - rescued
+
+                print(f"🔁 [전일종가] 재시도 결과: {rescued}개 구제, "
+                      f"{len(failed_round2)}개 최종 실패")
+
+                # ── 3차 재시도 (2차도 실패한 종목만, 마지막 기회) ──
+                if failed_round2 and scanner_enabled:
+                    print(f"🔁 [전일종가] 최종 재시도 전 20초 휴식...")
+                    await asyncio.sleep(20)
+
+                    retry_before_failed = prev_close_status["failed"]
+                    prev_close_status["failed"] = 0
+                    failed_round3 = await _run_batch(failed_round2, "3차최종")
+                    rescued3 = len(failed_round2) - len(failed_round3)
+                    prev_close_status["failed"] = retry_before_failed - rescued3
+
+                    print(f"🔁 [전일종가] 최종 재시도 결과: {rescued3}개 구제, "
+                          f"{len(failed_round3)}개 최종 실패")
+
+            elapsed = time.time() - prev_close_status["started_at"]
+            print(f"✅ [전일종가] 갱신 완료: 성공 {prev_close_status['done']}개, "
+                  f"실패 {prev_close_status['failed']}개 (소요: {elapsed/60:.1f}분)")
+
+            prev_close_status["is_running"] = False
+            prev_close_filling = False
+
+            # 갱신 완료 후 핫풀도 즉시 갱신
+            try:
+                update_hot_universe()
+            except Exception as e:
+                print(f"⚠️ [핫풀] 자동 재갱신 실패: {e}")
+
+            # 다음 체크까지 1시간 대기
+            await asyncio.sleep(3600)
+
+        except Exception as e:
+            print(f"❌ [전일종가] 루프 오류: {e}")
+            prev_close_status["is_running"] = False
+            prev_close_filling = False
+            await asyncio.sleep(60)
 
 # 🔄 기존 scanner_loop는 호환성 위해 두 루프 동시 실행하는 함수로
 async def scanner_loop():
-    """듀얼 스캐너 - 전종목 + 핫풀 동시 실행"""
+    """듀얼 스캐너 + 전일종가 캐시 루프 동시 실행"""
     await asyncio.gather(
         slow_scanner_loop(),
         fast_scanner_loop(),
+        prev_close_refresh_loop(),
     )
